@@ -33,7 +33,7 @@ type Service struct {
 	proxy        *httputil.ReverseProxy
 }
 
-func NewService(apiAddr, tunnelAddr string) *Service {
+func NewService(apiAddr, tunnelAddr string, apiKeys []string) *Service {
 	httpOps := httpServerOps{
 		Address:           apiAddr,
 		ReadHeaderTimeout: 5 * time.Second,
@@ -51,7 +51,8 @@ func NewService(apiAddr, tunnelAddr string) *Service {
 	service := Service{}
 	service.tokenManager = NewTokenManager()
 	service.registry = NewRegistry()
-	service.apiServer = NewApiServer(httpOps, service.tokenManager)
+	authManager := NewAuthManager(apiKeys)
+	service.apiServer = NewApiServer(httpOps, service.tokenManager, authManager)
 	service.tunnelServer = NewTunnelServer(tunnelOps, service.tokenManager, service.registry)
 	service.proxy = newTunnelProxy(service.registry)
 	return &service

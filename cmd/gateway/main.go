@@ -42,7 +42,8 @@ type PoolConfiguration struct {
 	// на нём gateway принимает регистрации туннелей от коннекторов.
 	ApiAddress string `json:"apiAddress"`
 	// Address — адрес, на котором пул туннелей принимает соединения.
-	Address string `json:"address"`
+	Address string   `json:"address"`
+	ApiKeys []string `json:"keys"`
 }
 
 func loadConfig(path string) (ServerConfiguration, error) {
@@ -119,6 +120,7 @@ func main() {
 		config.Proxy.Address,
 		config.Pool.ApiAddress,
 		config.Pool.Address,
+		config.Pool.ApiKeys,
 	)
 	var serveErr error
 	wg := sync.WaitGroup{}

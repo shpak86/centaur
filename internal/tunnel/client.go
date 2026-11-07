@@ -36,11 +36,12 @@ type Client struct {
 	proxy      *httputil.ReverseProxy
 }
 
-func NewClient(apiAddr, tunnelAddr, targetAddr string) *Client {
+func NewClient(apiAddr, tunnelAddr, targetAddr, apiKey string) *Client {
 	client := Client{
 		apiAddr:    apiAddr,
 		tunnelAddr: tunnelAddr,
 		targetAddr: targetAddr,
+		apiKey:     apiKey,
 		transport: &http.Transport{
 			MaxIdleConns:          100,
 			MaxIdleConnsPerHost:   100,
@@ -119,6 +120,7 @@ func (c *Client) serveTunnel() error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("ApiKey", c.apiKey)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

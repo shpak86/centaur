@@ -36,6 +36,7 @@ type PoolConfiguration struct {
 	ApiAddress string `json:"apiAddress"`
 	// Address — адрес, на котором пул туннелей принимает соединения.
 	Address string `json:"address"`
+	ApiKey  string `json:"key"`
 }
 
 type TargetConfiguration struct {
@@ -128,6 +129,7 @@ func main() {
 		config.Pool.ApiAddress,
 		config.Pool.Address,
 		config.Target.Address,
+		config.Pool.ApiKey,
 	)
 	slog.Info("connector started",
 		"poolApiAddress", config.Pool.ApiAddress,

@@ -21,28 +21,29 @@ type httpServerOps struct {
 type ApiServer struct {
 	httpServer   *http.Server
 	tokenManager *TokenManager
+	authManager  *AuthManager
 }
 
 func NewApiServer(
 	ops httpServerOps,
 	tokenManager *TokenManager,
+	authManager *AuthManager,
 ) *ApiServer {
-	mux := http.NewServeMux()
 	server := ApiServer{
+		authManager:  authManager,
 		tokenManager: tokenManager,
 		httpServer: &http.Server{
 			Addr:              ops.Address,
-			Handler:           mux,
 			ReadHeaderTimeout: ops.ReadHeaderTimeout,
 			ReadTimeout:       ops.ReadTimeout,
 			WriteTimeout:      ops.WriteTimeout,
 			IdleTimeout:       ops.IdleTimeout,
 		},
 	}
-
+	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", server.handleHealthz)
 	mux.HandleFunc("/api/v1/tunnels/register", server.handleRegisterTunnel)
-
+	server.httpServer.Handler = AuthMiddleware(mux, authManager)
 	return &server
 }
 
@@ -97,4 +98,15 @@ func (s *ApiServer) handleRegisterTunnel(w http.ResponseWriter, r *http.Request)
 	if _, err := w.Write(body); err != nil {
 		slog.Debug("Write tunnel registration response", "error", err)
 	}
+}
+
+func AuthMiddleware(next http.Handler, authManager *AuthManager) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		apiKey := r.Header.Get("ApiKey")
+		if !authManager.IsValid(apiKey) {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }

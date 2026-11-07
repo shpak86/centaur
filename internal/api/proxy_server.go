@@ -21,7 +21,7 @@ type ProxyServer struct {
 	tunnelService *tunnel.Service
 }
 
-func NewProxyServer(proxyAddress, poolApiAddress, poolAddress string) *ProxyServer {
+func NewProxyServer(proxyAddress, poolApiAddress, poolAddress string, apiKeys []string) *ProxyServer {
 	mux := http.NewServeMux()
 	server := ProxyServer{
 		httpServer: &http.Server{
@@ -33,7 +33,7 @@ func NewProxyServer(proxyAddress, poolApiAddress, poolAddress string) *ProxyServ
 			IdleTimeout: idleTimeout,
 		},
 	}
-	server.tunnelService = tunnel.NewService(poolApiAddress, poolAddress)
+	server.tunnelService = tunnel.NewService(poolApiAddress, poolAddress, apiKeys)
 	mux.HandleFunc("/", server.tunnelService.Handle)
 	return &server
 }
