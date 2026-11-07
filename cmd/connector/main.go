@@ -42,7 +42,8 @@ type PoolConfiguration struct {
 type TargetConfiguration struct {
 	// Address — URL локального сервиса (например, Ollama),
 	// куда коннектор проксирует запросы из туннеля.
-	Address string `json:"address"`
+	Address string   `json:"address"`
+	Models  []string `json:"models"`
 }
 
 func loadConfig(path string) (ClientConfiguration, error) {
@@ -130,6 +131,7 @@ func main() {
 		config.Pool.Address,
 		config.Target.Address,
 		config.Pool.ApiKey,
+		config.Target.Models,
 	)
 	slog.Info("connector started",
 		"poolApiAddress", config.Pool.ApiAddress,

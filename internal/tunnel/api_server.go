@@ -19,19 +19,18 @@ type httpServerOps struct {
 }
 
 type ApiServer struct {
-	httpServer   *http.Server
-	tokenManager *TokenManager
-	authManager  *AuthManager
+	httpServer  *http.Server
+	authManager *AuthManager
+	registry    *Registry
 }
 
 func NewApiServer(
 	ops httpServerOps,
-	tokenManager *TokenManager,
 	authManager *AuthManager,
+	registry *Registry,
 ) *ApiServer {
 	server := ApiServer{
-		authManager:  authManager,
-		tokenManager: tokenManager,
+		authManager: authManager,
 		httpServer: &http.Server{
 			Addr:              ops.Address,
 			ReadHeaderTimeout: ops.ReadHeaderTimeout,
@@ -39,6 +38,7 @@ func NewApiServer(
 			WriteTimeout:      ops.WriteTimeout,
 			IdleTimeout:       ops.IdleTimeout,
 		},
+		registry: registry,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", server.handleHealthz)
@@ -83,9 +83,15 @@ func (s *ApiServer) handleRegisterTunnel(w http.ResponseWriter, r *http.Request)
 		w.WriteHeader(http.StatusUnprocessableEntity)
 		return
 	}
+	if len(req.Models) == 0 {
+		slog.Error("Unprocessable tunnel registration", "error", "no models")
+		w.WriteHeader(http.StatusUnprocessableEntity)
+		return
+	}
 
+	token := s.registry.Register(req.Models)
 	resp := registerTunnelResponse{
-		Token: s.tokenManager.Get(),
+		Token: token,
 	}
 	body, err := json.Marshal(resp)
 	if err != nil {

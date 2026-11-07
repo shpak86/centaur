@@ -19,12 +19,11 @@ type tunnelServerOps struct {
 	IdleTimeout       time.Duration
 }
 type TunnelServer struct {
-	ctx          context.Context
-	cancel       context.CancelFunc
-	ops          tunnelServerOps
-	registry     *Registry
-	tokenManager *TokenManager
-	listener     *net.TCPListener
+	ctx      context.Context
+	cancel   context.CancelFunc
+	ops      tunnelServerOps
+	registry *Registry
+	listener *net.TCPListener
 }
 
 func (ts *TunnelServer) ListenAndServe() error {
@@ -60,15 +59,15 @@ func (ts *TunnelServer) ListenAndServe() error {
 	}
 }
 
-func readHandshake(conn *net.TCPConn) ([]byte, error) {
+func readHandshake(conn *net.TCPConn) (string, error) {
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	defer conn.SetReadDeadline(time.Time{})
 	token := make([]byte, 16)
 	_, err := io.ReadFull(conn, token)
 	if err != nil {
-		return nil, fmt.Errorf("read handshake: %w", err)
+		return "", fmt.Errorf("read handshake: %w", err)
 	}
-	return token, nil
+	return string(token), nil
 }
 
 func (ts *TunnelServer) handleTunnel(conn *net.TCPConn) error {
@@ -76,33 +75,19 @@ func (ts *TunnelServer) handleTunnel(conn *net.TCPConn) error {
 	conn.SetKeepAlive(true)
 	conn.SetKeepAlivePeriod(30 * time.Second)
 
-	// Соединение передаётся в пул только при успешном handshake.
-	// На успешном пути его закрывает тот, кто заберёт туннель из пула,
-	// поэтому закрываем conn только при выходе по ошибке.
-	registered := false
-	defer func() {
-		if registered {
-			return
-		}
-		if err := conn.Close(); err != nil {
-			slog.Error("Close tunnel connection", "error", err)
-		}
-	}()
-
 	token, err := readHandshake(conn)
 	if err != nil {
 		slog.Error("Tunnel handshake", "error", err)
 		return err
 	}
-	if !ts.tokenManager.Acquire(string(token)) {
-		err := fmt.Errorf("unknown token %s", token)
-		slog.Error("Invalid token", "error", err)
+
+	err = ts.registry.Bind(token, conn)
+	if err != nil {
+		slog.Error("Unable to bind conn to the tunnel", "token", token, "remote", conn.RemoteAddr().String())
 		return err
 	}
-
-	ts.registry.Add(NewTunnel(string(token), conn))
-	registered = true
-	slog.Info("tunnel registered")
+	// registered = true
+	slog.Debug("Tunnel bind", "token", token, "remote", conn.RemoteAddr().String())
 
 	return nil
 }
@@ -117,7 +102,11 @@ func (ts *TunnelServer) Stop() error {
 	}
 
 	wg := sync.WaitGroup{}
-	for _, it := range ts.registry.Tunnels() {
+	for it := range ts.registry.Tunnels() {
+		if it.Conn == nil {
+			// Туннель зарегистрирован, но коннектор ещё не привязал соединение.
+			continue
+		}
 		wg.Go(func() {
 			if err := it.Conn.Close(); err != nil {
 				slog.Debug("Close tunnel connection", "error", err)
@@ -131,13 +120,11 @@ func (ts *TunnelServer) Stop() error {
 
 func NewTunnelServer(
 	ops tunnelServerOps,
-	tokenManager *TokenManager,
 	registry *Registry,
 ) *TunnelServer {
 	server := TunnelServer{
-		ops:          ops,
-		registry:     registry,
-		tokenManager: tokenManager,
+		ops:      ops,
+		registry: registry,
 	}
 
 	return &server

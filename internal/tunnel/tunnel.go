@@ -3,17 +3,16 @@ package tunnel
 import "net"
 
 type Tunnel struct {
-	Id   string
-	Conn *net.TCPConn
-	// Busy — резервирование туннеля под конкретный запрос.
-	// Меняется только под мьютексом Registry, читать/писать напрямую нельзя.
-	Busy bool
+	Id     string
+	Conn   *net.TCPConn
+	Models []string
 }
 
-func NewTunnel(id string, conn *net.TCPConn) *Tunnel {
+func NewTunnel(id string, conn *net.TCPConn, models []string) *Tunnel {
 	t := Tunnel{
-		Id:   id,
-		Conn: conn,
+		Id:     id,
+		Conn:   conn,
+		Models: models,
 	}
 	return &t
 }

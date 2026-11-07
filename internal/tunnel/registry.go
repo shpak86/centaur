@@ -1,119 +1,86 @@
 package tunnel
 
 import (
-	"context"
+	"crypto/rand"
+	"errors"
+	"iter"
+	"log/slog"
+	"maps"
+	"net"
 	"slices"
 	"sync"
-	"time"
-)
-
-const (
-	// acquireTimeout — сколько ждём свободный туннель. Коннектор занимает
-	// несколько миллисекунд на переподключение, поэтому сразу после
-	// обслуживания запроса реестр может быть пуст: второй запрос того же
-	// keep-alive соединения не должен получать 503 из-за этой гонки.
-	acquireTimeout = 2 * time.Second
-	// acquirePollInterval — шаг опроса реестра при ожидании.
-	acquirePollInterval = 5 * time.Millisecond
 )
 
 // Registry хранит зарегистрированные туннели и выдаёт их по одному на запрос.
-// Туннели одноразовые: после ответа они удаляются из реестра и закрываются,
-// а коннектор регистрирует новый. Поэтому возврата туннеля в реестр нет —
-// освобождение это Delete.
+// Туннели одноразовые: при выдаче туннель удаляется из реестра, а после ответа
+// соединение закрывается и коннектор регистрирует новый. Возврата в реестр нет.
 type Registry struct {
-	tunnels []*Tunnel
+	tunnels map[string]*Tunnel
 	mu      sync.Mutex
 }
 
 func NewRegistry() *Registry {
 	return &Registry{
-		tunnels: make([]*Tunnel, 0),
+		tunnels: make(map[string]*Tunnel),
 	}
 }
 
-// Add добавляет туннель в реестр. nil и уже добавленный туннель игнорируются.
-func (r *Registry) Add(t *Tunnel) {
-	if t == nil {
-		return
+func (r *Registry) Register(models []string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	id := rand.Text()[:16]
+	tunnel := NewTunnel(id, nil, models)
+	slog.Debug("Register tunnel", "id", id, "models", models)
+	r.tunnels[id] = tunnel
+	return id
+}
+
+// Bind привязывает соединение коннектора к зарегистрированному туннелю.
+func (r *Registry) Bind(id string, conn *net.TCPConn) error {
+	if conn == nil {
+		return errors.New("bind closed connection")
 	}
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if slices.Contains(r.tunnels, t) {
-		return
+	tunnel, exists := r.tunnels[id]
+	if !exists {
+		return errors.New("unable to bind tunnel id: " + id)
 	}
-
-	r.tunnels = append(r.tunnels, t)
+	tunnel.Conn = conn
+	r.tunnels[id] = tunnel
+	slog.Debug("Bind conn", "id", id, "conn", conn.RemoteAddr().String())
+	return nil
 }
 
-// Tunnels возвращает копию списка туннелей, включая занятые: вызывающая
-// сторона может обходить его (Stop закрывает соединения), пока реестр
-// меняется.
-func (r *Registry) Tunnels() []*Tunnel {
+// Tunnels отдаёт итератор по текущему содержимому реестра. Занятые туннели
+// в него не попадают: они удаляются при выдаче из Acquire.
+func (r *Registry) Tunnels() iter.Seq[*Tunnel] {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return maps.Values(r.tunnels)
+}
+
+// Acquire отдаёт туннель, поддерживающий model, и сразу удаляет его из реестра:
+// туннель одноразовый, повторного обращения к нему не будет.
+// Туннель попадает в реестр до Bind, поэтому пока Conn == nil, он пропускается:
+// отдать его нельзя — RoundTrip писал бы в неготовое соединение.
+// Подходящего туннеля нет — (nil, false): ждать нечего, честнее сразу
+// ответить 503, чем держать запрос в таймауте.
+func (r *Registry) Acquire(model string) (*Tunnel, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	return slices.Clone(r.tunnels)
-}
-
-// Delete удаляет туннель из реестра и снимает с него резервирование.
-// Сравнение идёт по указателю, поэтому удалять нужно тот же экземпляр,
-// который вернул Acquire (или принимал Add).
-func (r *Registry) Delete(t *Tunnel) {
-	if t == nil {
-		return
-	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	idx := slices.Index(r.tunnels, t)
-	if idx == -1 {
-		return
-	}
-
-	r.tunnels = slices.Delete(r.tunnels, idx, idx+1)
-}
-
-// take резервирует первый свободный туннель (Busy = true).
-func (r *Registry) take() (*Tunnel, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	for _, t := range r.tunnels {
-		if t.Busy {
+	for id, t := range r.tunnels {
+		if t.Conn == nil {
 			continue
 		}
-
-		t.Busy = true
-		return t, true
+		if slices.Contains(t.Models, model) {
+			delete(r.tunnels, id)
+			return t, true
+		}
 	}
 
 	return nil, false
-}
-
-// Acquire резервирует свободный туннель, ожидая его не дольше acquireTimeout.
-// Если туннеля так и не появилось (или отменился контекст запроса) — ok == false.
-func (r *Registry) Acquire(ctx context.Context) (*Tunnel, bool) {
-	deadline := time.Now().Add(acquireTimeout)
-
-	for {
-		if t, ok := r.take(); ok {
-			return t, true
-		}
-
-		if time.Now().After(deadline) {
-			return nil, false
-		}
-
-		timer := time.NewTimer(acquirePollInterval)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return nil, false
-		case <-timer.C:
-		}
-	}
 }

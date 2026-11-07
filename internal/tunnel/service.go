@@ -25,11 +25,14 @@ var pastDeadline = time.Unix(1, 0)
 // errNoTunnel возвращается, когда в пуле нет свободных туннелей.
 var errNoTunnel = errors.New("no free tunnel")
 
+// errBadRequestBody возвращается, когда тело запроса на модельную ручку
+// не разбирается как JSON: прокси отвечает 400, не занимая туннель.
+var errBadRequestBody = errors.New("bad request body")
+
 type Service struct {
 	apiServer    *ApiServer
 	tunnelServer *TunnelServer
 	registry     *Registry
-	tokenManager *TokenManager
 	proxy        *httputil.ReverseProxy
 }
 
@@ -49,11 +52,10 @@ func NewService(apiAddr, tunnelAddr string, apiKeys []string) *Service {
 		IdleTimeout:       60 * time.Second,
 	}
 	service := Service{}
-	service.tokenManager = NewTokenManager()
 	service.registry = NewRegistry()
 	authManager := NewAuthManager(apiKeys)
-	service.apiServer = NewApiServer(httpOps, service.tokenManager, authManager)
-	service.tunnelServer = NewTunnelServer(tunnelOps, service.tokenManager, service.registry)
+	service.apiServer = NewApiServer(httpOps, authManager, service.registry)
+	service.tunnelServer = NewTunnelServer(tunnelOps, service.registry)
 	service.proxy = newTunnelProxy(service.registry)
 	return &service
 }
@@ -83,6 +85,11 @@ func newTunnelProxy(registry *Registry) *httputil.ReverseProxy {
 				http.Error(w, "no free tunnel", http.StatusServiceUnavailable)
 				return
 			}
+			if errors.Is(err, errBadRequestBody) {
+				slog.Debug("Bad request body", "path", r.URL.Path, "error", err)
+				http.Error(w, "bad request body", http.StatusBadRequest)
+				return
+			}
 			slog.Error("Proxy request", "error", err)
 			http.Error(w, "tunnel error", http.StatusBadGateway)
 		},
@@ -98,9 +105,17 @@ type tunnelTransport struct {
 }
 
 func (t *tunnelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	// Туннеля может не быть несколько миллисекунд, пока коннектор
-	// переподключается, — коротко ждём вместо мгновенного 503.
-	tunnel, exists := t.registry.Acquire(req.Context())
+	// Имя модели нужно для маршрутизации, поэтому тело читается до Acquire:
+	// на битом теле отвечаем 400, не занимая туннель. getModel возвращает
+	// тело обратно в req.Body — ниже его пишет req.Write.
+	model, err := getModel(req)
+	if err != nil {
+		return nil, err
+	}
+
+	// Туннели одноразовые: если подходящего туннеля сейчас нет, сразу отдаём
+	// errNoTunnel (503) — повторять запрос или нет, решает клиент.
+	tunnel, exists := t.registry.Acquire(model)
 	if !exists {
 		return nil, errNoTunnel
 	}
@@ -117,30 +132,35 @@ func (t *tunnelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	req.Close = true
 
 	tunnel.Conn.SetWriteDeadline(time.Now().Add(requestWriteTimeout))
-	err := req.Write(tunnel.Conn)
+	err = req.Write(tunnel.Conn)
 	tunnel.Conn.SetWriteDeadline(time.Time{})
 	if err != nil {
-		t.release(tunnel)
+		tunnel.Close()
 		return nil, fmt.Errorf("write request to tunnel: %w", err)
 	}
-	slog.Debug("tunnel request sent", "method", req.Method, "path", req.URL.Path)
+	slog.Info(
+		"tunnel request sent",
+		"token", tunnel.Id,
+		"remote", tunnel.Conn.RemoteAddr().String(),
+		"method", req.Method,
+		"path", req.URL.Path,
+		"model", model,
+	)
 
 	resp, err := http.ReadResponse(bufio.NewReader(tunnel.Conn), req)
 	if err != nil {
-		t.release(tunnel)
+		tunnel.Close()
 		return nil, fmt.Errorf("read response from tunnel: %w", err)
 	}
-	slog.Debug("tunnel response received", "status", resp.Status)
+	slog.Info("tunnel response received",
+		"token", tunnel.Id,
+		"remote", tunnel.Conn.RemoteAddr().String(),
+		"status", resp.Status)
 
 	// Туннель освобождаем вместе с телом ответа: к этому моменту оно прочитано.
 	resp.Body = &tunnelBody{ReadCloser: resp.Body, tunnel: tunnel, registry: t.registry}
 
 	return resp, nil
-}
-
-func (t *tunnelTransport) release(tunnel *Tunnel) {
-	t.registry.Delete(tunnel)
-	tunnel.Close()
 }
 
 // tunnelBody закрывает одноразовый туннель, когда тело ответа дочитано.
@@ -154,14 +174,12 @@ type tunnelBody struct {
 func (b *tunnelBody) Close() error {
 	err := b.ReadCloser.Close()
 	b.once.Do(func() {
-		b.registry.Delete(b.tunnel)
 		b.tunnel.Close()
 	})
 	return err
 }
 
 func (s *Service) ListenAndServe() error {
-	go s.tokenManager.Serve()
 	wg := sync.WaitGroup{}
 	wg.Go(func() {
 		err := s.apiServer.ListenAndServe()
@@ -187,11 +205,29 @@ func (s *Service) Stop(ctx context.Context) error {
 	if err := s.tunnelServer.Stop(); err != nil {
 		errs = append(errs, fmt.Errorf("stop tunnel server: %w", err))
 	}
-	s.tokenManager.Close()
 	return errors.Join(errs...)
 }
 
 // Handle проксирует клиентский запрос в свободный туннель.
+// Проксируются только инференс-ручки (modelPaths): gateway выполняет инференс,
+// а не управляет удалённой Ollama, поэтому инфо/админ-ручки (tags, ps, show,
+// pull, push, create, copy, delete, /v1/models) он не проксирует и отвечает 501.
 func (s *Service) Handle(w http.ResponseWriter, r *http.Request) {
+	// GET / — проверка живости gateway: Ollama-клиенты пингуют корень.
+	// Отвечаем сами, в туннель не ходим.
+	if r.Method == http.MethodGet && r.URL.Path == "/" {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		if _, err := w.Write([]byte("Centaur is running")); err != nil {
+			slog.Debug("Write health response", "error", err)
+		}
+		return
+	}
+
+	if _, ok := modelPaths[r.URL.Path]; !ok {
+		slog.Debug("Rejected non-inference request", "method", r.Method, "path", r.URL.Path)
+		http.Error(w, "centaur gateway proxies inference endpoints only", http.StatusNotImplemented)
+		return
+	}
+
 	s.proxy.ServeHTTP(w, r)
 }

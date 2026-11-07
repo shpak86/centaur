@@ -36,12 +36,13 @@ type Client struct {
 	proxy      *httputil.ReverseProxy
 }
 
-func NewClient(apiAddr, tunnelAddr, targetAddr, apiKey string) *Client {
+func NewClient(apiAddr, tunnelAddr, targetAddr, apiKey string, models []string) *Client {
 	client := Client{
 		apiAddr:    apiAddr,
 		tunnelAddr: tunnelAddr,
 		targetAddr: targetAddr,
 		apiKey:     apiKey,
+		models:     models,
 		transport: &http.Transport{
 			MaxIdleConns:          100,
 			MaxIdleConnsPerHost:   100,
