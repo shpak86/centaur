@@ -86,9 +86,7 @@ func (ts *TunnelServer) handleTunnel(conn *net.TCPConn) error {
 		slog.Error("Unable to bind conn to the tunnel", "token", token, "remote", conn.RemoteAddr().String())
 		return err
 	}
-	// registered = true
 	slog.Debug("Tunnel bind", "token", token, "remote", conn.RemoteAddr().String())
-
 	return nil
 }
 

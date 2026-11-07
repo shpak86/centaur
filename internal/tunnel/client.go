@@ -34,15 +34,17 @@ type Client struct {
 	models     []string
 	transport  *http.Transport
 	proxy      *httputil.ReverseProxy
+	tunnels    int
 }
 
-func NewClient(apiAddr, tunnelAddr, targetAddr, apiKey string, models []string) *Client {
+func NewClient(apiAddr, tunnelAddr, targetAddr, apiKey string, models []string, tunnels int) *Client {
 	client := Client{
 		apiAddr:    apiAddr,
 		tunnelAddr: tunnelAddr,
 		targetAddr: targetAddr,
 		apiKey:     apiKey,
 		models:     models,
+		tunnels:    tunnels,
 		transport: &http.Transport{
 			MaxIdleConns:          100,
 			MaxIdleConnsPerHost:   100,
@@ -84,6 +86,15 @@ func newOllamaProxy(targetAddr string, transport http.RoundTripper) *httputil.Re
 }
 
 func (c *Client) Serve() {
+	var wg sync.WaitGroup
+	for range c.tunnels { // range-over-int (go.mod: 1.27)
+		wg.Add(1)
+		go func() { defer wg.Done(); c.serveLoop() }()
+	}
+	wg.Wait()
+}
+
+func (c *Client) serveLoop() {
 	for {
 		select {
 		case <-c.ctx.Done():

@@ -37,6 +37,7 @@ type PoolConfiguration struct {
 	// Address — адрес, на котором пул туннелей принимает соединения.
 	Address string `json:"address"`
 	ApiKey  string `json:"key"`
+	Tunnels int    `json:"tunnels"`
 }
 
 type TargetConfiguration struct {
@@ -79,6 +80,8 @@ func validateConfig(config ClientConfiguration) error {
 		return fmt.Errorf("target.address is required")
 	case !isURL(config.Target.Address):
 		return fmt.Errorf("target.address must be an URL with scheme like http://127.0.0.1:11434, got %q", config.Target.Address)
+	case config.Pool.Tunnels <= 0:
+		return fmt.Errorf("pool.tunnels must be positive, got %d", config.Pool.Tunnels)
 	}
 	return nil
 }
@@ -132,6 +135,7 @@ func main() {
 		config.Target.Address,
 		config.Pool.ApiKey,
 		config.Target.Models,
+		config.Pool.Tunnels,
 	)
 	slog.Info("connector started",
 		"poolApiAddress", config.Pool.ApiAddress,
