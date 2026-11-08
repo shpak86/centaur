@@ -38,6 +38,13 @@ func NewProxyServer(proxyAddress, poolApiAddress, poolAddress string, apiKeys []
 	return &server
 }
 
+// MetricsHandler отдаёт обработчик экспозиции Prometheus. Его обслуживает
+// отдельный MetricsServer на gateway.metrics.address, поэтому клиентский
+// прокси (proxy.address) остаётся только для проксирования запросов.
+func (s *ProxyServer) MetricsHandler() http.Handler {
+	return s.tunnelService.MetricsHandler()
+}
+
 func (s *ProxyServer) ListenAndServe() error {
 	go s.tunnelService.ListenAndServe()
 

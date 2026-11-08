@@ -10,8 +10,11 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"sync"
 	"time"
+
+	"github.com/shpak86/centaur/internal/metrics"
 )
 
 // requestWriteTimeout ограничивает запись запроса в туннель: если коннектор
@@ -34,6 +37,7 @@ type Service struct {
 	tunnelServer *TunnelServer
 	registry     *Registry
 	proxy        *httputil.ReverseProxy
+	metrics      *metrics.Metrics
 }
 
 func NewService(apiAddr, tunnelAddr string, apiKeys []string) *Service {
@@ -52,7 +56,8 @@ func NewService(apiAddr, tunnelAddr string, apiKeys []string) *Service {
 		IdleTimeout:       60 * time.Second,
 	}
 	service := Service{}
-	service.registry = NewRegistry()
+	service.metrics = metrics.New()
+	service.registry = NewRegistry(service.metrics)
 	authManager := NewAuthManager(apiKeys)
 	service.apiServer = NewApiServer(httpOps, authManager, service.registry)
 	service.tunnelServer = NewTunnelServer(tunnelOps, service.registry)
@@ -208,16 +213,31 @@ func (s *Service) Stop(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// MetricsHandler отдаёт метрики gateway в текстовом формате Prometheus.
+// Его обслуживает отдельный MetricsServer на metrics.address (GET /metrics),
+// а не клиентский прокси proxy.address.
+func (s *Service) MetricsHandler() http.Handler {
+	return s.metrics.Handler()
+}
+
 // Handle проксирует клиентский запрос в свободный туннель.
 // Проксируются только инференс-ручки (modelPaths): gateway выполняет инференс,
 // а не управляет удалённой Ollama, поэтому инфо/админ-ручки (tags, ps, show,
 // pull, push, create, copy, delete, /v1/models) он не проксирует и отвечает 501.
 func (s *Service) Handle(w http.ResponseWriter, r *http.Request) {
+	endpoint := endpointLabel(r.URL.Path)
+	rec := &statusRecorder{ResponseWriter: w}
+	start := time.Now()
+	defer func() {
+		s.metrics.RequestsTotal.WithLabelValues(endpoint, strconv.Itoa(rec.statusCode())).Inc()
+		s.metrics.RequestDuration.WithLabelValues(endpoint).Observe(time.Since(start).Seconds())
+	}()
+
 	// GET / — проверка живости gateway: Ollama-клиенты пингуют корень.
 	// Отвечаем сами, в туннель не ходим.
 	if r.Method == http.MethodGet && r.URL.Path == "/" {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		if _, err := w.Write([]byte("Centaur is running")); err != nil {
+		rec.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		if _, err := rec.Write([]byte("Centaur is running")); err != nil {
 			slog.Debug("Write health response", "error", err)
 		}
 		return
@@ -225,9 +245,63 @@ func (s *Service) Handle(w http.ResponseWriter, r *http.Request) {
 
 	if _, ok := modelPaths[r.URL.Path]; !ok {
 		slog.Debug("Rejected non-inference request", "method", r.Method, "path", r.URL.Path)
-		http.Error(w, "centaur gateway proxies inference endpoints only", http.StatusNotImplemented)
+		http.Error(rec, "centaur gateway proxies inference endpoints only", http.StatusNotImplemented)
 		return
 	}
 
-	s.proxy.ServeHTTP(w, r)
+	s.proxy.ServeHTTP(rec, r)
+}
+
+// endpointLabel ограничивает кардинальность метрик: инференс-ручки идут по
+// своему пути, рут — как есть, всё остальное схлопывается в "other".
+func endpointLabel(path string) string {
+	if path == "/" {
+		return path
+	}
+	if _, ok := modelPaths[path]; ok {
+		return path
+	}
+	return "other"
+}
+
+// statusRecorder запоминает HTTP-статус ответа для метрик. Реализует
+// http.Flusher и Unwrap: без этого обёртка сломала бы стриминг NDJSON, который
+// ReverseProxy флашит через http.NewResponseController.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (r *statusRecorder) WriteHeader(code int) {
+	if r.status == 0 {
+		r.status = code
+	}
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *statusRecorder) Write(b []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	return r.ResponseWriter.Write(b)
+}
+
+func (r *statusRecorder) Flush() {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+func (r *statusRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
+}
+
+func (r *statusRecorder) statusCode() int {
+	if r.status == 0 {
+		return http.StatusOK
+	}
+	return r.status
 }

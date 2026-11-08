@@ -10,6 +10,8 @@ Centaur — это gateway-прокси для [Ollama](https://ollama.com): к�
                       туннель (TCP)
 client ──▶ gateway ─────────────────▶ connector ──▶ Ollama (локально)
              proxy.address          pool.address     target.address
+
+prometheus ──▶ gateway (metrics.address, GET /metrics)
 ```
 
 ## Идея
@@ -53,7 +55,10 @@ Gateway проксирует **только инференс-ручки** — т
 | --- | --- |
 | `POST /api/generate`, `POST /api/chat`, `POST /api/embed`, `POST /api/embeddings`, `POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/embeddings` | Проксируется по модели из тела запроса |
 | `GET /` | Отвечает сам gateway: `200 Centaur is running` |
-| Остальные пути (`/api/version`, `/api/tags`, `/api/ps`, `/api/show`, `/api/pull`, `/api/push`, `/api/create`, `/api/copy`, `/api/delete`, `/v1/models`, ...) | `501 Not Implemented` |
+| Остальные пути (`/api/version`, `/api/tags`, `/api/ps`, `/api/show`, `/api/pull`, `/api/push`, `/api/create`, `/api/copy`, `/api/delete`, `/v1/models`, `/metrics`, ...) | `501 Not Implemented` |
+
+> Метрики Prometheus отдаются **не** на `proxy.address`, а на отдельном
+> `metrics.address` — см. раздел «Метрики» ниже.
 
 Коды ответов proxy:
 
@@ -72,7 +77,7 @@ Gateway проксирует **только инференс-ручки** — т
 | `cmd/gateway` | Бинарь gateway: конфиг, запуск/остановка серверов |
 | `cmd/connector` | Бинарь коннектора: конфиг, запуск/остановка клиента |
 | `cmd/ollama-mock` | Мок Ollama API для тестов |
-| `internal/api` | `ProxyServer` — клиентский HTTP-сервер и `tunnel.Service` |
+| `internal/api` | `ProxyServer` — клиентский HTTP-сервер, `MetricsServer` — сервер метрик, и `tunnel.Service` |
 | `internal/tunnel/client.go` | Клиент коннектора: регистрация, туннель, прокси в Ollama |
 | `internal/tunnel/service.go` | Gateway-сторона: обратный прокси, разбор модели, маршрутизация |
 | `internal/tunnel/registry.go` | Реестр туннелей (`Register`/`Bind`/`Acquire`) |
@@ -82,11 +87,13 @@ Gateway проксирует **только инференс-ручки** — т
 | `internal/tunnel/model.go` | Список инференс-ручек и разбор имени модели из тела |
 | `internal/tunnel/auth.go` | Проверка API-ключа |
 | `internal/tunnel/dto.go` | DTO регистрации туннеля |
+| `internal/metrics` | Реестр Prometheus, метрики gateway и обработчик `/metrics` |
 
 ## Требования
 
 - Go 1.27+ (см. `go.mod`).
-- Внешних зависимостей нет — только стандартная библиотека.
+- Единственная внешняя зависимость — `github.com/prometheus/client_golang`
+  (метрики gateway); остальное — стандартная библиотека.
 
 ## Сборка и тесты
 
@@ -126,6 +133,9 @@ curl -si http://127.0.0.1:18180/api/tags
 # инференс: маршрутизируется по модели в теле запроса
 curl -s -X POST http://127.0.0.1:18180/api/generate \
   -d '{"model":"mock:7b","prompt":"hello","stream":false}'
+
+# метрики Prometheus (отдельный порт metrics.address)
+curl -s http://127.0.0.1:18183/metrics | grep '^centaur_gateway'
 ```
 
 ## Конфигурация
@@ -135,7 +145,8 @@ curl -s -X POST http://127.0.0.1:18180/api/generate \
 ```json
 {
   "logger": { "level": "info" },
-  "proxy":  { "address": "127.0.0.1:18180" },
+  "proxy":   { "address": "127.0.0.1:18180" },
+  "metrics": { "address": "127.0.0.1:18183" },
   "pool": {
     "address": "127.0.0.1:18181",
     "apiAddress": "127.0.0.1:18182",
@@ -148,6 +159,7 @@ curl -s -X POST http://127.0.0.1:18180/api/generate \
 | --- | --- |
 | `logger.level` | Уровень логов: `debug`, `info`, `warn`, `error` |
 | `proxy.address` | Адрес клиентского HTTP-прокси |
+| `metrics.address` | Listen-адрес HTTP-сервера метрик Prometheus; **без схемы**, отдельный от `proxy.address` |
 | `pool.address` | Listen-адрес TCP-сервера пула (сюда приходят туннели) |
 | `pool.apiAddress` | Listen-адрес HTTP API пула (сюда приходят регистрации); **без схемы** |
 | `pool.keys` | Список допустимых API-ключей коннекторов |
@@ -195,6 +207,32 @@ curl -s -X POST http://127.0.0.1:18180/api/generate \
 
 Неверный или отсутствующий ключ — `403 Forbidden`. Пустой список моделей или
 битый JSON — `422 Unprocessable Entity`.
+
+## Метрики
+
+Gateway отдаёт метрики Prometheus на `GET /metrics` — на **отдельном** адресе
+`metrics.address`, а не на `proxy.address`. Так метрики не пересекаются с
+клиентским трафиком: свой порт удобнее слушать на loopback, скрейпить
+независимо и закрывать на сетевом периметре. Формат — стандартный
+экспозиционный текст Prometheus.
+
+| Метрика | Тип | Метки | Смысл |
+| --- | --- | --- | --- |
+| `centaur_gateway_requests_total` | counter | `endpoint`, `code` | Клиентские запросы по эндпоинту и HTTP-статусу |
+| `centaur_gateway_request_duration_seconds` | histogram | `endpoint` | Длительность обработки запроса (включая стриминг) |
+| `centaur_gateway_tunnel_registrations_total` | counter | — | Успешные регистрации туннелей |
+| `centaur_gateway_tunnel_bind_errors_total` | counter | — | Ошибки привязки соединения к туннелю (handshake) |
+| `centaur_gateway_tunnel_acquire_misses_total` | counter | — | Запросы, которым не досталось свободного туннеля (`503`) |
+| `centaur_gateway_tunnels` | gauge | `state` (`pending` / `ready`) | Сколько туннелей сейчас в реестре |
+
+`endpoint` ограничен по кардинальности: инференс-ручки идут по своему пути,
+`/` — health gateway, всё прочее схлопывается в `other`. Дополнительно
+экспортируются стандартные метрики рантайма (`go_*`) и процесса (`process_*`).
+
+```sh
+# метрики на отдельном порту metrics.address
+curl -s http://127.0.0.1:18183/metrics | grep '^centaur_gateway'
+```
 
 ## Ограничения
 

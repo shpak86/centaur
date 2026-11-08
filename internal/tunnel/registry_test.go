@@ -5,6 +5,8 @@ import (
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/shpak86/centaur/internal/metrics"
 )
 
 // newTCPConn отдаёт пару соединений на loopback: Registry.Bind принимает
@@ -48,7 +50,7 @@ func registerBound(t *testing.T, r *Registry, models ...string) {
 // TestAcquireRoutesByModel проверяет маршрутизацию по модели: выдаётся туннель,
 // поддерживающий запрошенную модель, и он сразу исчезает из реестра.
 func TestAcquireRoutesByModel(t *testing.T) {
-	r := NewRegistry()
+	r := NewRegistry(metrics.New())
 	registerBound(t, r, "llama3:8b")
 	registerBound(t, r, "qwen2.5:7b")
 
@@ -85,7 +87,7 @@ func TestAcquireRoutesByModel(t *testing.T) {
 // Порог заведомо меньше прежних 2 с ожидания: тест упадёт, если в Acquire
 // вернут поллинг свободного туннеля.
 func TestAcquireEmptyRegistryReturnsImmediately(t *testing.T) {
-	r := NewRegistry()
+	r := NewRegistry(metrics.New())
 
 	start := time.Now()
 	tunnel, ok := r.Acquire("llama3:8b")
@@ -102,7 +104,7 @@ func TestAcquireEmptyRegistryReturnsImmediately(t *testing.T) {
 // TestAcquireSkipsUnboundTunnel: туннель, попавший в реестр до Bind (Conn == nil),
 // не выдаётся — иначе RoundTrip писал бы в неготовое соединение.
 func TestAcquireSkipsUnboundTunnel(t *testing.T) {
-	r := NewRegistry()
+	r := NewRegistry(metrics.New())
 
 	id := r.Register([]string{"llama3:8b"})
 

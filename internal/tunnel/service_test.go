@@ -77,3 +77,35 @@ func TestHandleInferenceWithoutTunnel(t *testing.T) {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
 	}
 }
+
+// TestHandleRecordsMetrics проверяет, что Handle пишет запросы в метрики
+// gateway (эндпоинт + HTTP-статус), а /metrics отдаёт их в формате Prometheus.
+func TestHandleRecordsMetrics(t *testing.T) {
+	service := newTestService()
+
+	// health «/» → 200.
+	service.Handle(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+	// инференс без свободного туннеля → 503 + учёт промаха.
+	service.Handle(httptest.NewRecorder(), httptest.NewRequest(
+		http.MethodPost, "/api/generate", strings.NewReader(`{"model":"llama3:8b","prompt":"hi"}`)))
+	// не-инференс-ручка → 501 и схлопывается в endpoint="other".
+	service.Handle(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/tags", nil))
+
+	rec := httptest.NewRecorder()
+	service.MetricsHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("metrics status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	body := rec.Body.String()
+	for _, want := range []string{
+		`centaur_gateway_requests_total{code="200",endpoint="/"} 1`,
+		`centaur_gateway_requests_total{code="503",endpoint="/api/generate"} 1`,
+		`centaur_gateway_requests_total{code="501",endpoint="other"} 1`,
+		`centaur_gateway_tunnel_acquire_misses_total 1`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("metrics output does not contain %q\n%s", want, body)
+		}
+	}
+}

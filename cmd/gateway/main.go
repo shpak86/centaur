@@ -22,9 +22,10 @@ const shutdownTimeout = 10 * time.Second
 // ServerConfiguration описывает содержимое файла конфигурации,
 // который передаётся в -config (по умолчанию /etc/centaur/server.json).
 type ServerConfiguration struct {
-	Logger LoggerConfiguration `json:"logger"`
-	Proxy  ProxyConfiguration  `json:"proxy"`
-	Pool   PoolConfiguration   `json:"pool"`
+	Logger  LoggerConfiguration  `json:"logger"`
+	Proxy   ProxyConfiguration   `json:"proxy"`
+	Metrics MetricsConfiguration `json:"metrics"`
+	Pool    PoolConfiguration    `json:"pool"`
 }
 
 type LoggerConfiguration struct {
@@ -34,6 +35,13 @@ type LoggerConfiguration struct {
 
 type ProxyConfiguration struct {
 	// Address — адрес, на котором gateway принимает клиентские запросы.
+	Address string `json:"address"`
+}
+
+type MetricsConfiguration struct {
+	// Address — listen-адрес HTTP-сервера метрик Prometheus (host:port, без
+	// схемы). Отдельный от proxy.address, чтобы метрики не пересекались с
+	// клиентским трафиком.
 	Address string `json:"address"`
 }
 
@@ -69,6 +77,11 @@ func validateConfig(config ServerConfiguration) error {
 	switch {
 	case config.Proxy.Address == "":
 		return fmt.Errorf("proxy.address is required")
+	// listen-адрес метрик, а не URL: сервер со схемой в адресе просто не поднялся бы.
+	case config.Metrics.Address == "":
+		return fmt.Errorf("metrics.address is required")
+	case strings.Contains(config.Metrics.Address, "://"):
+		return fmt.Errorf("metrics.address must be a listen address like 127.0.0.1:18183, got URL %q", config.Metrics.Address)
 	case config.Pool.Address == "":
 		return fmt.Errorf("pool.address is required")
 	case config.Pool.ApiAddress == "":
@@ -122,12 +135,27 @@ func main() {
 		config.Pool.Address,
 		config.Pool.ApiKeys,
 	)
-	var serveErr error
+	// Метрики — на отдельном сервере и порту (metrics.address), чтобы не
+	// смешиваться с клиентским трафиком proxy.address.
+	metricsServer := api.NewMetricsServer(config.Metrics.Address, proxyServer.MetricsHandler())
+
+	var (
+		proxyErr   error
+		metricsErr error
+	)
 	wg := sync.WaitGroup{}
 	wg.Go(func() {
-		serveErr = proxyServer.ListenAndServe()
-		if serveErr != nil {
-			slog.Error("Proxy server", "error", serveErr)
+		proxyErr = proxyServer.ListenAndServe()
+		if proxyErr != nil {
+			slog.Error("Proxy server", "error", proxyErr)
+		}
+		// сервер больше не работает — будим main, если он ждёт сигнал
+		stop()
+	})
+	wg.Go(func() {
+		metricsErr = metricsServer.ListenAndServe()
+		if metricsErr != nil {
+			slog.Error("Metrics server", "error", metricsErr)
 		}
 		// сервер больше не работает — будим main, если он ждёт сигнал
 		stop()
@@ -144,11 +172,14 @@ func main() {
 	if err := proxyServer.Stop(stopCtx); err != nil {
 		slog.Error("Proxy server shutdown", "error", err)
 	}
+	if err := metricsServer.Stop(stopCtx); err != nil {
+		slog.Error("Metrics server shutdown", "error", err)
+	}
 
 	wg.Wait()
 	slog.Info("stopped")
 
-	if serveErr != nil {
+	if proxyErr != nil || metricsErr != nil {
 		os.Exit(1)
 	}
 }
