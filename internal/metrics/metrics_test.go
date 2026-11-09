@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// scrape собирает текст метрик через Handler — так же, как это делает Prometheus.
+// scrape collects the metrics text through Handler — just like Prometheus does.
 func scrape(t *testing.T, m *Metrics) string {
 	t.Helper()
 
@@ -19,8 +19,9 @@ func scrape(t *testing.T, m *Metrics) string {
 	return rec.Body.String()
 }
 
-// TestHandlerExposesCountersAndRuntime проверяет, что счётчики, гистограмма и
-// коллекторы рантайма Go попадают в вывод в текстовом формате Prometheus.
+// TestHandlerExposesCountersAndRuntime checks that counters, the histogram and
+// the Go runtime collectors make it into the output in the Prometheus text
+// format.
 func TestHandlerExposesCountersAndRuntime(t *testing.T) {
 	m := New()
 	m.RequestsTotal.WithLabelValues("/api/generate", "200").Inc()
@@ -40,8 +41,8 @@ func TestHandlerExposesCountersAndRuntime(t *testing.T) {
 	}
 }
 
-// TestRegisterIgnoresDuplicate: повторная регистрация того же коллектора не
-// должна паниковать (иначе двойная инициализация роняла бы gateway).
+// TestRegisterIgnoresDuplicate: registering the same collector twice must not
+// panic (otherwise a double initialization would take the gateway down).
 func TestRegisterIgnoresDuplicate(t *testing.T) {
 	m := New()
 	m.Register(m.RequestsTotal)

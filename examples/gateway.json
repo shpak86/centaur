@@ -1,0 +1,18 @@
+{
+  "logger": {
+    "level": "info"
+  },
+  "proxy": {
+    "address": "127.0.0.1:18180"
+  },
+  "metrics": {
+    "address": "127.0.0.1:18183"
+  },
+  "pool": {
+    "address": "127.0.0.1:18181",
+    "apiAddress": "127.0.0.1:18182",
+    "keys": [
+      "connector-key"
+    ]
+  }
+}

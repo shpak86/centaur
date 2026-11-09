@@ -9,16 +9,16 @@ import (
 	"github.com/shpak86/centaur/internal/metrics"
 )
 
-// TestTunnelStateCollectorReportsPendingAndReady: gauge centaur_gateway_tunnels
-// считает туннели по состоянию прямо из реестра (pending — ждём handshake,
-// ready — готов принять запрос).
+// TestTunnelStateCollectorReportsPendingAndReady: the centaur_gateway_tunnels
+// gauge counts tunnels by state straight from the registry (pending — waiting for
+// the handshake, ready — ready to accept a request).
 func TestTunnelStateCollectorReportsPendingAndReady(t *testing.T) {
 	m := metrics.New()
 	r := NewRegistry(m)
 
-	// pending: зарегистрирован, но соединение ещё не привязано.
+	// pending: registered, but no connection bound yet.
 	r.Register([]string{"llama3:8b"})
-	// ready: зарегистрирован и привязан к соединению.
+	// ready: registered and bound to a connection.
 	registerBound(t, r, "llama3:8b")
 
 	rec := httptest.NewRecorder()

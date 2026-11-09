@@ -15,8 +15,8 @@ import (
 	"github.com/shpak86/centaur/internal/metrics"
 )
 
-// newTCPConn отдаёт пару соединений на loopback: Registry.Bind принимает
-// именно *net.TCPConn, поэтому фейковый net.Conn не подходит.
+// newTCPConn returns a pair of loopback connections: Registry.Bind takes exactly
+// *net.TCPConn, so a fake net.Conn will not do.
 func newTCPConn(t *testing.T) (*net.TCPConn, *net.TCPConn) {
 	t.Helper()
 
@@ -41,8 +41,8 @@ func newTCPConn(t *testing.T) (*net.TCPConn, *net.TCPConn) {
 	return server, client
 }
 
-// registerBound регистрирует туннель и биндит к нему соединение — так туннель
-// выглядит в реестре после handshake коннектора.
+// registerBound registers a tunnel and binds a connection to it — this is how a
+// tunnel looks in the registry after the connector's handshake.
 func registerBound(t *testing.T, r *Registry, models ...string) {
 	t.Helper()
 
@@ -53,10 +53,10 @@ func registerBound(t *testing.T, r *Registry, models ...string) {
 	}
 }
 
-// registerDeadBound регистрирует туннель, коннектор которого уже упал:
-// клиентскую половину соединения закрываем и дожидаемся EOF на серверной.
-// После EOF проба живости всегда видит мёртвое соединение — гонки с доставкой
-// FIN нет.
+// registerDeadBound registers a tunnel whose connector has already died: the
+// client half of the connection is closed and we wait for EOF on the server
+// half. After EOF the liveness probe always sees a dead connection — there is no
+// race with FIN delivery.
 func registerDeadBound(t *testing.T, r *Registry, models ...string) {
 	t.Helper()
 
@@ -75,8 +75,8 @@ func registerDeadBound(t *testing.T, r *Registry, models ...string) {
 	}
 }
 
-// expire сдвигает регистрацию в прошлое: так pendingTTL проверяется без
-// ожидания.
+// expire moves a registration into the past: this way pendingTTL is tested
+// without waiting.
 func expire(t *testing.T, r *Registry, id string) {
 	t.Helper()
 
@@ -90,7 +90,7 @@ func expire(t *testing.T, r *Registry, id string) {
 	tunnel.RegisteredAt = time.Now().Add(-2 * pendingTTL)
 }
 
-// waitEmptyRegistry ждёт, пока реестр опустеет (не дольше timeout).
+// waitEmptyRegistry waits for the registry to become empty (no longer than timeout).
 func waitEmptyRegistry(t *testing.T, r *Registry, timeout time.Duration) {
 	t.Helper()
 
@@ -107,7 +107,7 @@ func waitEmptyRegistry(t *testing.T, r *Registry, timeout time.Duration) {
 	}
 }
 
-// scrape отдаёт метрики в текстовом формате Prometheus.
+// scrape serves the metrics in the Prometheus text format.
 func scrape(t *testing.T, m *metrics.Metrics) string {
 	t.Helper()
 
@@ -119,7 +119,7 @@ func scrape(t *testing.T, m *metrics.Metrics) string {
 	return rec.Body.String()
 }
 
-// assertMetrics проверяет, что выдача метрик содержит все ожидаемые строки.
+// assertMetrics checks that the metrics output contains all the expected lines.
 func assertMetrics(t *testing.T, m *metrics.Metrics, want ...string) {
 	t.Helper()
 
@@ -131,8 +131,8 @@ func assertMetrics(t *testing.T, m *metrics.Metrics, want ...string) {
 	}
 }
 
-// TestAcquireRoutesByModel проверяет маршрутизацию по модели: выдаётся туннель,
-// поддерживающий запрошенную модель, и он сразу исчезает из реестра.
+// TestAcquireRoutesByModel checks model-based routing: a tunnel supporting the
+// requested model is handed out and immediately disappears from the registry.
 func TestAcquireRoutesByModel(t *testing.T) {
 	r := NewRegistry(metrics.New())
 	registerBound(t, r, "llama3:8b")
@@ -146,13 +146,13 @@ func TestAcquireRoutesByModel(t *testing.T) {
 		t.Fatalf("Acquire() models = %v, want contain qwen2.5:7b", tunnel.Models)
 	}
 
-	// Туннель одноразовый: повторно он не выдаётся, других туннелей с этой
-	// моделью нет.
+	// A tunnel is single-use: it is not handed out again, and there are no other
+	// tunnels with this model.
 	if _, ok := r.Acquire("qwen2.5:7b"); ok {
 		t.Fatal("Acquire(qwen2.5:7b) = true, want false: tunnel must be removed")
 	}
 
-	// Туннель другой модели не тронут.
+	// A tunnel for another model is untouched.
 	tunnel, ok = r.Acquire("llama3:8b")
 	if !ok {
 		t.Fatal("Acquire(llama3:8b) = false, want tunnel")
@@ -161,15 +161,15 @@ func TestAcquireRoutesByModel(t *testing.T) {
 		t.Fatalf("Acquire() models = %v, want contain llama3:8b", tunnel.Models)
 	}
 
-	// Модели без коннектора нет ни в одном туннеле.
+	// No tunnel has a connector for this model.
 	if _, ok := r.Acquire("unknown"); ok {
 		t.Fatal("Acquire(unknown) = true, want false")
 	}
 }
 
-// TestAcquireEmptyRegistryReturnsImmediately: пустой реестр — мгновенный отказ.
-// Порог заведомо меньше прежних 2 с ожидания: тест упадёт, если в Acquire
-// вернут поллинг свободного туннеля.
+// TestAcquireEmptyRegistryReturnsImmediately: an empty registry is an instant
+// refusal. The threshold is well below the former 2-second wait: the test fails
+// if Acquire ever goes back to polling for a free tunnel.
 func TestAcquireEmptyRegistryReturnsImmediately(t *testing.T) {
 	r := NewRegistry(metrics.New())
 
@@ -185,8 +185,9 @@ func TestAcquireEmptyRegistryReturnsImmediately(t *testing.T) {
 	}
 }
 
-// TestAcquireSkipsUnboundTunnel: туннель, попавший в реестр до Bind (Conn == nil),
-// не выдаётся — иначе RoundTrip писал бы в неготовое соединение.
+// TestAcquireSkipsUnboundTunnel: a tunnel that reached the registry before Bind
+// (Conn == nil) is not handed out — otherwise RoundTrip would write to a
+// connection that is not ready.
 func TestAcquireSkipsUnboundTunnel(t *testing.T) {
 	r := NewRegistry(metrics.New())
 
@@ -209,9 +210,10 @@ func TestAcquireSkipsUnboundTunnel(t *testing.T) {
 	}
 }
 
-// TestAcquireSkipsDeadTunnel: туннель убитого коннектора не достаётся клиенту.
-// Раньше он выдавался, RoundTrip падал на записи в мёртвое соединение и клиент
-// получал 502; теперь такой туннель выбрасывается из пула, а ответ — 503.
+// TestAcquireSkipsDeadTunnel: a tunnel of a killed connector is not handed to a
+// client. It used to be handed out, RoundTrip failed writing to the dead
+// connection and the client got a 502; now such a tunnel is dropped from the pool
+// and the response is a 503.
 func TestAcquireSkipsDeadTunnel(t *testing.T) {
 	m := metrics.New()
 	r := NewRegistry(m)
@@ -233,8 +235,9 @@ func TestAcquireSkipsDeadTunnel(t *testing.T) {
 	)
 }
 
-// TestAcquireUsesLiveTunnelAmongDead: мёртвые туннели не мешают выдаче живого —
-// они выбрасываются по ходу поиска, как бы ни обходилась карта.
+// TestAcquireUsesLiveTunnelAmongDead: dead tunnels do not prevent a live one
+// from being handed out — they are dropped as the search proceeds, however the
+// map happens to be traversed.
 func TestAcquireUsesLiveTunnelAmongDead(t *testing.T) {
 	m := metrics.New()
 	r := NewRegistry(m)
@@ -250,7 +253,7 @@ func TestAcquireUsesLiveTunnelAmongDead(t *testing.T) {
 		t.Fatalf("Acquire() models = %v, want contain llama3:8b", tunnel.Models)
 	}
 
-	// Модель есть только у мёртвых туннелей — честный отказ.
+	// The model is only served by dead tunnels — an honest refusal.
 	if tunnel, ok := r.Acquire("qwen2.5:7b"); ok {
 		t.Fatalf("Acquire(qwen2.5:7b) = (%v, true), want (nil, false)", tunnel)
 	}
@@ -261,8 +264,8 @@ func TestAcquireUsesLiveTunnelAmongDead(t *testing.T) {
 	)
 }
 
-// TestSweepRemovesDeadAndExpiredTunnels: свип вычищает и мёртвые соединения, и
-// регистрации, до handshake которых коннектор не дожил (pendingTTL).
+// TestSweepRemovesDeadAndExpiredTunnels: the sweep drops both dead connections
+// and registrations whose connector never made it to the handshake (pendingTTL).
 func TestSweepRemovesDeadAndExpiredTunnels(t *testing.T) {
 	m := metrics.New()
 	r := NewRegistry(m)
@@ -287,8 +290,8 @@ func TestSweepRemovesDeadAndExpiredTunnels(t *testing.T) {
 	)
 }
 
-// TestSweepKeepsLiveTunnels: живые туннели свип не трогает, счётчик вычистки не
-// появляется.
+// TestSweepKeepsLiveTunnels: the sweep leaves live tunnels alone and the
+// cleanup counter does not appear.
 func TestSweepKeepsLiveTunnels(t *testing.T) {
 	m := metrics.New()
 	r := NewRegistry(m)
@@ -308,8 +311,8 @@ func TestSweepKeepsLiveTunnels(t *testing.T) {
 	}
 }
 
-// TestSweepConcurrentWithAcquire: свип и выдача идут под одним мьютексом реестра
-// — гонок нет (проверяется прогоном с -race).
+// TestSweepConcurrentWithAcquire: the sweep and acquiring run under the same
+// registry mutex — no races (verified by running with -race).
 func TestSweepConcurrentWithAcquire(t *testing.T) {
 	r := NewRegistry(metrics.New())
 	for range 4 {

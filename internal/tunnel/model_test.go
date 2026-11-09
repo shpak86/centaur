@@ -126,8 +126,8 @@ func TestRequestModelBadJSON(t *testing.T) {
 		t.Fatalf("requestModel() error = %v, want errBadRequestBody", err)
 	}
 
-	// Тело восстанавливается даже при ошибке: после 400 в туннель оно не идёт,
-	// но req.Body остаётся читаемым для того, кто закроет запрос.
+	// The body is restored even on error: after a 400 it does not go into the
+	// tunnel, but req.Body stays readable for whoever closes the request.
 	if got := readBody(t, req); got != body {
 		t.Fatalf("body = %q, want %q", got, body)
 	}
@@ -136,8 +136,8 @@ func TestRequestModelBadJSON(t *testing.T) {
 func TestRequestModelUnknownLengthSetsContentLength(t *testing.T) {
 	const body = `{"model":"llama3:8b"}`
 
-	// io.ReadCloser неизвестного httptest типа — ContentLength = -1,
-	// как у запроса с chunked-телом.
+	// An io.ReadCloser of an unknown httptest type — ContentLength = -1,
+	// like a request with a chunked body.
 	req := httptest.NewRequest(http.MethodPost, "/api/chat", io.NopCloser(strings.NewReader(body)))
 	if req.ContentLength != -1 {
 		t.Fatalf("ContentLength = %d, want -1", req.ContentLength)
@@ -155,8 +155,8 @@ func TestRequestModelUnknownLengthSetsContentLength(t *testing.T) {
 }
 
 func TestRequestModelLargeBodyStaysStreamable(t *testing.T) {
-	// Валидный JSON с model, но больше лимита: модель не извлекаем,
-	// а тело должно уйти дальше целиком, потоком.
+	// Valid JSON with a model, but over the limit: the model is not extracted,
+	// while the body must be passed on in full, as a stream.
 	body := `{"model":"llama3:8b","prompt":"` + strings.Repeat("x", maxModelBodyBytes) + `"}`
 
 	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(body))
@@ -181,8 +181,8 @@ func TestRequestModelLargeBodyStaysStreamable(t *testing.T) {
 	}
 }
 
-// assertRestoredBody проверяет, что requestModel вернул тело в req.Body,
-// согласовав его с ContentLength и GetBody.
+// assertRestoredBody checks that requestModel put the body back into req.Body
+// consistently with ContentLength and GetBody.
 func assertRestoredBody(t *testing.T, req *http.Request, want string) {
 	t.Helper()
 

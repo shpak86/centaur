@@ -12,11 +12,11 @@ import (
 	"github.com/shpak86/centaur/internal/tunnel"
 )
 
-// metricsTestTimeout ограничивает ожидание готовности сервера метрик.
+// metricsTestTimeout limits how long we wait for the metrics server to be ready.
 const metricsTestTimeout = 5 * time.Second
 
-// freeListenAddr занимает свободный TCP-порт на loopback и сразу освобождает
-// его, чтобы передать адрес серверу метрик.
+// freeListenAddr takes a free loopback TCP port and releases it immediately so the
+// address can be handed to the metrics server.
 func freeListenAddr(t *testing.T) string {
 	t.Helper()
 
@@ -31,9 +31,9 @@ func freeListenAddr(t *testing.T) string {
 	return addr
 }
 
-// TestMetricsServerServesOnItsOwnPort проверяет, что сервер метрик поднимается
-// на собственном адресе (отдельно от proxy.address) и отдаёт экспозицию
-// Prometheus.
+// TestMetricsServerServesOnItsOwnPort checks that the metrics server comes up on
+// its own address (separate from proxy.address) and serves the Prometheus
+// exposition.
 func TestMetricsServerServesOnItsOwnPort(t *testing.T) {
 	service := tunnel.NewService("127.0.0.1:0", "127.0.0.1:0", nil)
 	server := NewMetricsServer(freeListenAddr(t), service.MetricsHandler())
@@ -68,7 +68,7 @@ func TestMetricsServerServesOnItsOwnPort(t *testing.T) {
 	}
 }
 
-// scrapeMetrics ждёт готовности сервера метрик и возвращает тело /metrics.
+// scrapeMetrics waits for the metrics server to be ready and returns the /metrics body.
 func scrapeMetrics(t *testing.T, addr string) string {
 	t.Helper()
 

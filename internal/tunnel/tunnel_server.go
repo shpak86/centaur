@@ -11,6 +11,7 @@ import (
 	"time"
 )
 
+// tunnelServerOps holds the address and HTTP timeouts for TunnelServer.
 type tunnelServerOps struct {
 	Address           string
 	ReadHeaderTimeout time.Duration
@@ -18,6 +19,9 @@ type tunnelServerOps struct {
 	WriteTimeout      time.Duration
 	IdleTimeout       time.Duration
 }
+
+// TunnelServer accepts connector tunnel connections and binds them to registered
+// tunnels using the handshake token.
 type TunnelServer struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -26,6 +30,7 @@ type TunnelServer struct {
 	listener *net.TCPListener
 }
 
+// ListenAndServe accepts tunnel connections until Stop closes the listener.
 func (ts *TunnelServer) ListenAndServe() error {
 	addr, err := net.ResolveTCPAddr("tcp", ts.ops.Address)
 	if err != nil {
@@ -40,7 +45,7 @@ func (ts *TunnelServer) ListenAndServe() error {
 	for {
 		conn, err := ts.listener.AcceptTCP()
 		if err != nil {
-			// Stop() закрыл listener — это штатное завершение, а не ошибка.
+			// Stop closed the listener — a normal shutdown, not an error.
 			if errors.Is(err, net.ErrClosed) {
 				slog.Info("tunnel server stopped")
 				return nil
@@ -52,13 +57,14 @@ func (ts *TunnelServer) ListenAndServe() error {
 			slog.Error("Accept tunnel", "error", err)
 			continue
 		}
-		// readHandshake читает токен с дедлайном, поэтому соединения
-		// обрабатываем параллельно: иначе один медленный коннектор
-		// блокирует приём остальных туннелей.
+		// readHandshake reads the token under a deadline, so connections are
+		// handled concurrently: otherwise one slow connector would block the
+		// acceptance of other tunnels.
 		go ts.handleTunnel(conn)
 	}
 }
 
+// readHandshake reads the 16-byte handshake token under a read deadline.
 func readHandshake(conn *net.TCPConn) (string, error) {
 	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	defer conn.SetReadDeadline(time.Time{})
@@ -70,6 +76,9 @@ func readHandshake(conn *net.TCPConn) (string, error) {
 	return string(token), nil
 }
 
+// handleTunnel reads the handshake and binds the connection to the matching
+// tunnel. It enables TCP keepalive so a silently broken connection is eventually
+// detected.
 func (ts *TunnelServer) handleTunnel(conn *net.TCPConn) error {
 	conn.SetNoDelay(true)
 	conn.SetKeepAlive(true)
@@ -90,9 +99,10 @@ func (ts *TunnelServer) handleTunnel(conn *net.TCPConn) error {
 	return nil
 }
 
+// Stop closes the listener and all bound tunnel connections.
 func (ts *TunnelServer) Stop() error {
 	var err error
-	// listener == nil, если ListenAndServe не смог занять адрес.
+	// listener is nil if ListenAndServe could not take the address.
 	if ts.listener != nil {
 		if cerr := ts.listener.Close(); cerr != nil && !errors.Is(cerr, net.ErrClosed) {
 			err = cerr
@@ -102,7 +112,8 @@ func (ts *TunnelServer) Stop() error {
 	wg := sync.WaitGroup{}
 	for it := range ts.registry.Tunnels() {
 		if it.Conn == nil {
-			// Туннель зарегистрирован, но коннектор ещё не привязал соединение.
+			// The tunnel is registered but the connector has not bound a
+			// connection yet.
 			continue
 		}
 		wg.Go(func() {
@@ -116,6 +127,8 @@ func (ts *TunnelServer) Stop() error {
 	return err
 }
 
+// NewTunnelServer creates a tunnel server that binds connections to registry
+// tunnels.
 func NewTunnelServer(
 	ops tunnelServerOps,
 	registry *Registry,

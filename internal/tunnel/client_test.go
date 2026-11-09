@@ -12,15 +12,16 @@ import (
 	"time"
 )
 
-// testToken — токен длиной 16 байт, как rand.Text()[:16] в реестре gateway:
-// сервер туннелей читает ровно 16 байт handshake.
+// testToken is a 16-byte token, like rand.Text()[:16] in the gateway registry:
+// the tunnel server reads exactly 16 handshake bytes.
 const testToken = "0123456789abcdef"
 
-// testTimeout ограничивает ожидание событий в тестах клиента.
+// testTimeout limits how long client tests wait for events.
 const testTimeout = 5 * time.Second
 
-// newRegisterServer поднимает фейковый HTTP API пула: отвечает на регистрацию
-// туннеля токеном и проверяет ApiKey, чтобы поймать регресс в заголовке.
+// newRegisterServer starts a fake pool HTTP API: it answers a tunnel
+// registration with a token and checks the ApiKey to catch a regression in the
+// header.
 func newRegisterServer(t *testing.T, apiKey string) *httptest.Server {
 	t.Helper()
 
@@ -42,8 +43,8 @@ func newRegisterServer(t *testing.T, apiKey string) *httptest.Server {
 	return srv
 }
 
-// newTunnelPool поднимает фейковый TCP-сервер пула: принимает соединения,
-// читает 16-байтовый handshake и передаёт соединение в handler.
+// newTunnelPool starts a fake pool TCP server: it accepts connections, reads the
+// 16-byte handshake and passes the connection to handler.
 func newTunnelPool(t *testing.T, handler func(conn net.Conn)) string {
 	t.Helper()
 
@@ -73,8 +74,8 @@ func newTunnelPool(t *testing.T, handler func(conn net.Conn)) string {
 	return listener.Addr().String()
 }
 
-// startClient запускает Serve в горутине и гарантирует остановку клиента по
-// завершении теста.
+// startClient runs Serve in a goroutine and guarantees the client is stopped when
+// the test finishes.
 func startClient(t *testing.T, client *Client) {
 	t.Helper()
 
@@ -94,9 +95,9 @@ func startClient(t *testing.T, client *Client) {
 	})
 }
 
-// TestServeHoldsConfiguredTunnels проверяет, что коннектор держит сразу
-// столько туннелей, сколько задано в pool.tunnels: каждый воркер регистрирует
-// свой туннель и держит его открытым в ожидании запроса.
+// TestServeHoldsConfiguredTunnels checks that the connector holds exactly as many
+// tunnels as pool.tunnels specifies: each worker registers its own tunnel and
+// keeps it open waiting for a request.
 func TestServeHoldsConfiguredTunnels(t *testing.T) {
 	const tunnels = 3
 	const apiKey = "key"
@@ -106,8 +107,8 @@ func TestServeHoldsConfiguredTunnels(t *testing.T) {
 
 	held := make([]net.Conn, 0, tunnels)
 	tunnelAddr := newTunnelPool(t, func(conn net.Conn) {
-		// Туннель остаётся открытым: коннектор обязан держать его ready,
-		// пока gateway не отдаст ему запрос.
+		// The tunnel stays open: the connector must keep it ready until the
+		// gateway hands it a request.
 		opened <- conn
 	})
 
@@ -135,9 +136,9 @@ func TestServeHoldsConfiguredTunnels(t *testing.T) {
 	})
 }
 
-// TestServeProxiesTunnelRequestToOllama проверяет сквозной путь одного туннеля:
-// клиент регистрируется, поднимает соединение и проксирует пришедший по нему
-// запрос в Ollama, возвращая ответ обратно.
+// TestServeProxiesTunnelRequestToOllama checks the end-to-end path of a single
+// tunnel: the client registers, brings up a connection and proxies the request
+// arriving over it to Ollama, returning the response back.
 func TestServeProxiesTunnelRequestToOllama(t *testing.T) {
 	const apiKey = "key"
 
@@ -171,8 +172,8 @@ func TestServeProxiesTunnelRequestToOllama(t *testing.T) {
 	}
 	result := make(chan tunnelResult, 1)
 
-	// newTunnelPool играет роль gateway: пишет в туннель один запрос и читает
-	// ответ, как это делает tunnelTransport.RoundTrip.
+	// newTunnelPool plays the gateway: it writes one request into the tunnel and
+	// reads the response, just like tunnelTransport.RoundTrip does.
 	tunnelAddr := newTunnelPool(t, func(conn net.Conn) {
 		req, err := http.NewRequest(http.MethodPost, "http://tunnel/api/generate", strings.NewReader(`{"model":"m"}`))
 		if err != nil {

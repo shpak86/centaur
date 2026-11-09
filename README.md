@@ -1,268 +1,78 @@
 # Centaur
 
-Centaur — это gateway-прокси для [Ollama](https://ollama.com): коннекторы,
-запущенные рядом с локальными Ollama, поднимают исходящие TCP-туннели к gateway,
-а клиенты обращаются к единой точке входа. Gateway принимает клиентские
-запросы, выбирает подходящий туннель по имени модели в запросе и проксирует
-запрос в локальную Ollama за этим туннелем.
+[English](README.md) | [Русский](README.ru.md)
+
+Centaur builds a distributed inference network behind a single API. It combines everyday computing devices—MacBooks, workstations, local servers, and GPU hosts—into one pool, without requiring a separate production infrastructure.
+
+The project is designed for community-first use: participants can connect their machines and share compute without public IP addresses, port forwarding, or complex network setup. Each node establishes an outbound tunnel to a central server. The `Gateway` routes requests by model name and proxies inference to network participants.
 
 ```
-                      туннель (TCP)
-client ──▶ gateway ─────────────────▶ connector ──▶ Ollama (локально)
-             proxy.address          pool.address     target.address
-
-prometheus ──▶ gateway (metrics.address, GET /metrics)
+                      tunnel (TCP)
+client ──▶ gateway ─────────────────▶ connector ──▶ Ollama
 ```
 
-## Идея
+## Key ideas
 
-- **Gateway** (`cmd/gateway`) — единая точка входа. Принимает клиентские
-  HTTP-запросы и держит пул зарегистрированных туннелей.
-- **Connector** (`cmd/connector`) — запускается рядом с Ollama. Регистрируется
-  в пуле gateway и поднимает исходящее TCP-соединение (туннель). Запросы,
-  пришедшие по туннелю, проксирует в локальную Ollama.
-- **Ollama-mock** (`cmd/ollama-mock`) — тестовый сервер, отвечающий в формате
-  Ollama API. Нужен, чтобы прогонять всю связку без реальной модели.
+- **Everyday machines as inference nodes.** Use available hardware: laptops, workstations, local servers, and GPU machines.
+- **Outbound tunnels.** Nodes connect to the Gateway, so no inbound access, public IP, or port forwarding is needed.
+- **Model-based routing.** The Gateway selects a node using the model name in the request.
+- **Tunnel pool.** Each Connector maintains multiple tunnels and can serve multiple requests in parallel.
+- **A flexible pool.** Nodes can join or leave without reconfiguring the whole system.
 
-Ключевой момент: **туннели одноразовые**. На один клиентский запрос выдаётся
-один туннель; после ответа соединение закрывается, и коннектор поднимает новый
-туннель. Так переподключение не зависит от состояния клиентского соединения.
-Коннектор держит не один такой туннель, а пул из `pool.tunnels` штук
-параллельно — в простое они готовы принять запрос, под нагрузкой обслуживают
-до `pool.tunnels` запросов одновременно.
+## Quick start
 
-Пул не раздаёт мёртвые туннели. Перед выдачей gateway заглядывает во входящий
-поток соединения (не потребляя данные) и выбрасывает туннель, если коннектор
-закрыл или оборвал соединение; тот же обход реестра раз в `sweepInterval`
-(5 секунд) убирает туннели, до которых не дошёл трафик. Без этого после падения
-коннектора его туннели оставались бы в пуле «готовыми», выдавались бы клиентам, и
-те получали бы `502` на запись в закрытое соединение.
+Example configs are in `examples/`. The connector's `pool.key` must be listed in the Gateway's `pool.keys`.
 
-## Как это работает
-
-1. Коннектор отправляет `POST /api/v1/tunnels/register` на HTTP API пула
-   (заголовок `ApiKey`, тело `{"models": [...]}`) и получает `token`.
-2. Коннектор подключается к TCP-адресу пула и первым делом пишет 16-байтовый
-   `token` — это handshake. Gateway по токену привязывает соединение к
-   зарегистрированному туннелю.
-3. Клиентский запрос приходит на `proxy.address`. Gateway разбирает имя модели
-   из тела запроса, находит свободный туннель, поддерживающий эту модель, и
-   проксирует запрос по туннелю.
-4. Коннектор принимает запрос из туннеля и проксирует его в локальную Ollama.
-5. После ответа туннель закрывается, коннектор поднимает новый. `Serve`
-   запускает `pool.tunnels` таких воркеров, поэтому пул не пустеет.
-
-## Маршрутизация по модели
-
-Gateway проксирует **только инференс-ручки** — те, в которых клиент указывает
-модель. Инфо/админ-ручки Ollama он не проксирует: gateway выполняет инференс,
-а не управляет удалённой Ollama.
-
-| Запрос | Поведение |
-| --- | --- |
-| `POST /api/generate`, `POST /api/chat`, `POST /api/embed`, `POST /api/embeddings`, `POST /v1/chat/completions`, `POST /v1/completions`, `POST /v1/embeddings` | Проксируется по модели из тела запроса |
-| `GET /` | Отвечает сам gateway: `200 Centaur is running` |
-| Остальные пути (`/api/version`, `/api/tags`, `/api/ps`, `/api/show`, `/api/pull`, `/api/push`, `/api/create`, `/api/copy`, `/api/delete`, `/v1/models`, `/metrics`, ...) | `501 Not Implemented` |
-
-> Метрики Prometheus отдаются **не** на `proxy.address`, а на отдельном
-> `metrics.address` — см. раздел «Метрики» ниже.
-
-Коды ответов proxy:
-
-| Код | Когда |
-| --- | --- |
-| `200` | Запрос обслужен (возможен также `4xx/5xx` самой Ollama) |
-| `400` | Инференс-ручка, но тело не разбирается как JSON |
-| `501` | Путь не является инференс-ручкой |
-| `502` | Коннектор не смог проксировать запрос в Ollama |
-| `503` | Нет свободного туннеля под запрошенную модель |
-
-## Компоненты
-
-| Путь | Назначение |
-| --- | --- |
-| `cmd/gateway` | Бинарь gateway: конфиг, запуск/остановка серверов |
-| `cmd/connector` | Бинарь коннектора: конфиг, запуск/остановка клиента |
-| `cmd/ollama-mock` | Мок Ollama API для тестов |
-| `internal/api` | `ProxyServer` — клиентский HTTP-сервер, `MetricsServer` — сервер метрик, и `tunnel.Service` |
-| `internal/tunnel/client.go` | Клиент коннектора: регистрация, туннель, прокси в Ollama |
-| `internal/tunnel/service.go` | Gateway-сторона: обратный прокси, разбор модели, маршрутизация |
-| `internal/tunnel/registry.go` | Реестр туннелей (`Register`/`Bind`/`Acquire`) |
-| `internal/tunnel/tunnel.go` | Структура `Tunnel` |
-| `internal/tunnel/api_server.go` | HTTP API пула (регистрация туннелей) + `AuthMiddleware` |
-| `internal/tunnel/tunnel_server.go` | TCP-сервер пула (handshake) |
-| `internal/tunnel/model.go` | Список инференс-ручек и разбор имени модели из тела |
-| `internal/tunnel/auth.go` | Проверка API-ключа |
-| `internal/tunnel/dto.go` | DTO регистрации туннеля |
-| `internal/metrics` | Реестр Prometheus, метрики gateway и обработчик `/metrics` |
-
-## Требования
-
-- Go 1.27+ (см. `go.mod`).
-- Единственная внешняя зависимость — `github.com/prometheus/client_golang`
-  (метрики gateway); остальное — стандартная библиотека.
-
-## Сборка и тесты
+Start the Gateway on a server, for example `gateway.lan`. The sample Gateway config binds to loopback; for remote connectors, set its listen addresses to a reachable interface (for example, `0.0.0.0`) and make `gateway.lan` resolve to that host via DNS or your hosts file.
 
 ```sh
-go build ./...
-go test ./...
-go test -race ./...
-go vet ./...
+go run ./cmd/gateway -config examples/gateway.json
 ```
 
-## Быстрый старт (локальное тестовое развёртывание)
-
-Сценарий из трёх процессов: `ollama-mock` → `connector` → `gateway`. Готовые
-примеры конфигов лежат в `deployment/test/` (каталог локальный, в `.gitignore`);
-их содержимое приведено в разделе «Конфигурация» ниже.
+On each inference host, make sure Ollama is running and the configured models are available. Then start the connector with the address of `gateway.lan` so it can join the inference network. Configure the models available on each host so the Gateway can route requests to the right connector.
 
 ```sh
-# Терминал 1 — мок Ollama
-go run ./cmd/ollama-mock -listen=127.0.0.1:11435
-
-# Терминал 2 — gateway
-go run ./cmd/gateway -config deployment/test/gateway.json
-
-# Терминал 3 — connector
-go run ./cmd/connector -config deployment/test/connector-mock.json
+go run ./cmd/connector -config examples/connector.json
 ```
 
-Проверка через gateway (`proxy.address` = `127.0.0.1:18180`):
+Try it:
 
 ```sh
-# health gateway (отвечает сам gateway, не через туннель)
-curl -s http://127.0.0.1:18180/
+# Gateway health: answered by the Gateway itself, not through a tunnel
+curl -s http://gateway.lan:18180/
 
-# инфо/админ-ручки Ollama gateway не проксирует — 501
-curl -si http://127.0.0.1:18180/api/tags
+# Ollama info/admin endpoints are not proxied by the Gateway → 501
+curl -si http://gateway.lan:18180/api/tags
 
-# инференс: маршрутизируется по модели в теле запроса
-curl -s -X POST http://127.0.0.1:18180/api/generate \
-  -d '{"model":"mock:7b","prompt":"hello","stream":false}'
+# Inference: the tunnel is selected by the model in the request body
+curl -s -X POST http://gateway.lan:18180/api/generate \
+  -d '{"model":"llama3.2:1b","prompt":"hello","stream":false}'
 
-# метрики Prometheus (отдельный порт metrics.address)
-curl -s http://127.0.0.1:18183/metrics | grep '^centaur_gateway'
+# Prometheus metrics (separate metrics.address port)
+curl -s http://gateway.lan:18183/metrics | grep '^centaur_gateway'
 ```
 
-## Docker-стенд
+## Configuration
 
-Полный стенд в Docker (gateway + 2 коннектора + 2 инстанса Ollama с
-запечёнными в образ моделями + Prometheus + Grafana) лежит в
-`deployment/docker/` — порядок сборки, порты и проверки описаны в
-[`deployment/docker/README.md`](deployment/docker/README.md).
+See [`docs/configuration.md`](docs/configuration.md) for the full field reference, including the different meanings of `pool.*` on the Gateway and connector sides.
 
-## Конфигурация
+## Limitations
 
-### Gateway (`-config`, по умолчанию `/etc/centaur/gateway.json`)
+- Ollama info/admin endpoints are not available through the Gateway (`501`): the Gateway runs inference; it does not manage remote Ollama instances.
+- Concurrency is limited by `pool.tunnels`: requests with no available tunnel receive `503` while the connector replenishes the pool.
+- The pool detects dead tunnels when a connection closes (FIN/RST), on acquisition and during background sweeps. A silent network failure is detected only by TCP keepalive, so a request may end with `502`.
 
-```json
-{
-  "logger": { "level": "info" },
-  "proxy":   { "address": "127.0.0.1:18180" },
-  "metrics": { "address": "127.0.0.1:18183" },
-  "pool": {
-    "address": "127.0.0.1:18181",
-    "apiAddress": "127.0.0.1:18182",
-    "keys": ["<api-key-1>", "<api-key-2>"]
-  }
-}
-```
+See [`docs/architecture.md`](docs/architecture.md) for details.
 
-| Поле | Смысл |
-| --- | --- |
-| `logger.level` | Уровень логов: `debug`, `info`, `warn`, `error` |
-| `proxy.address` | Адрес клиентского HTTP-прокси |
-| `metrics.address` | Listen-адрес HTTP-сервера метрик Prometheus; **без схемы**, отдельный от `proxy.address` |
-| `pool.address` | Listen-адрес TCP-сервера пула (сюда приходят туннели) |
-| `pool.apiAddress` | Listen-адрес HTTP API пула (сюда приходят регистрации); **без схемы** |
-| `pool.keys` | Список допустимых API-ключей коннекторов |
+## Documentation
 
-### Connector (`-config`, по умолчанию `/etc/centaur/connector.json`)
+- [`docs/architecture.md`](docs/architecture.md) — system design, one-shot tunnels, handshake, tunnel pool, stale tunnel cleanup, and package map.
+- [`docs/configuration.md`](docs/configuration.md) — full Gateway and connector configuration reference.
+- [`docs/api.md`](docs/api.md) — model routing, response codes, and tunnel pool API.
+- [`docs/metrics.md`](docs/metrics.md) — Prometheus metrics.
+- [`docs/development.md`](docs/development.md) — build, run, test, and development requirements.
+- [`docs/docker.md`](docs/docker.md) — build images and run the Gateway and connector in Docker.
 
-```json
-{
-  "logger": { "level": "info" },
-  "pool": {
-    "address": "127.0.0.1:18181",
-    "apiAddress": "http://127.0.0.1:18182",
-    "key": "<api-key>",
-    "tunnels": 4
-  },
-  "target": {
-    "address": "http://127.0.0.1:11434",
-    "models": ["llama3:8b", "qwen2.5-coder:7b"]
-  }
-}
-```
+## License
 
-| Поле | Смысл |
-| --- | --- |
-| `logger.level` | Уровень логов: `debug`, `info`, `warn`, `error` |
-| `pool.address` | `host:port` TCP-сервера пула (куда подключается коннектор) |
-| `pool.apiAddress` | URL HTTP API пула регистрации; **со схемой** (`http://...`) |
-| `pool.key` | API-ключ коннектора (должен быть в `pool.keys` gateway) |
-| `pool.tunnels` | Сколько туннелей коннектор держит одновременно; должно быть `> 0` |
-| `target.address` | URL локальной Ollama |
-| `target.models` | Модели, которые коннектор «объявляет» и по которым маршрутизируется |
-
-> Имена `pool.*` на двух сторонах имеют разный смысл: gateway **слушает** на
-> `pool.address`/`pool.apiAddress`, коннектор **ходит** по ним. Оба бинарника
-> валидируют формат адресов при старте и падают с внятной ошибкой.
-
-## API пула туннелей
-
-Слушается на `pool.apiAddress` и защищён заголовком `ApiKey`.
-
-| Метод и путь | Заголовки | Тело | Ответ |
-| --- | --- | --- | --- |
-| `POST /api/v1/tunnels/register` | `ApiKey` | `{"models":["..."]}` | `{"token":"..."}` |
-| `GET /healthz` | `ApiKey` | — | `ok` |
-
-Неверный или отсутствующий ключ — `403 Forbidden`. Пустой список моделей или
-битый JSON — `422 Unprocessable Entity`.
-
-## Метрики
-
-Gateway отдаёт метрики Prometheus на `GET /metrics` — на **отдельном** адресе
-`metrics.address`, а не на `proxy.address`. Так метрики не пересекаются с
-клиентским трафиком: свой порт удобнее слушать на loopback, скрейпить
-независимо и закрывать на сетевом периметре. Формат — стандартный
-экспозиционный текст Prometheus.
-
-| Метрика | Тип | Метки | Смысл |
-| --- | --- | --- | --- |
-| `centaur_gateway_requests_total` | counter | `endpoint`, `code` | Клиентские запросы по эндпоинту и HTTP-статусу |
-| `centaur_gateway_request_duration_seconds` | histogram | `endpoint` | Длительность обработки запроса (включая стриминг) |
-| `centaur_gateway_tunnel_registrations_total` | counter | — | Успешные регистрации туннелей |
-| `centaur_gateway_tunnel_bind_errors_total` | counter | — | Ошибки привязки соединения к туннелю (handshake) |
-| `centaur_gateway_tunnel_acquire_misses_total` | counter | — | Запросы, которым не досталось свободного туннеля (`503`) |
-| `centaur_gateway_tunnels` | gauge | `state` (`pending` / `ready`) | Сколько туннелей сейчас в реестре |
-| `centaur_gateway_tunnel_stale_total` | counter | `state` (`pending` / `ready`) | Туннели, вычищенные из реестра: соединение мертво (`ready`) или handshake не состоялся (`pending`) |
-
-`endpoint` ограничен по кардинальности: инференс-ручки идут по своему пути,
-`/` — health gateway, всё прочее схлопывается в `other`. Дополнительно
-экспортируются стандартные метрики рантайма (`go_*`) и процесса (`process_*`).
-
-```sh
-# метрики на отдельном порту metrics.address
-curl -s http://127.0.0.1:18183/metrics | grep '^centaur_gateway'
-```
-
-## Ограничения
-
-- Инфо/админ-ручки Ollama через gateway недоступны (`501`): управлять удалённой
-  Ollama gateway не умеет и не должен.
-- WebSocket/Upgrade (`101 Switching Protocols`) туннель не поддерживает;
-  Ollama его не использует.
-- Тело запроса больше 1 МиБ не разбирается ради имени модели (так устроен
-  `/api/chat` с крупными `images`), поэтому такой запрос не маршрутизируется по
-  модели.
-- Туннели одноразовые, и их число ограничено `pool.tunnels`: если параллельных
-  запросов больше, лишние получают `503`, пока коннектор поднимает новые
-  туннели.
-- Мёртвые туннели пул находит по закрытию соединения (FIN/RST) — при выдаче
-  туннеля и раз в `sweepInterval`. Обрыв без FIN/RST («чёрная дыра»: связь
-  пропала молча) виден только TCP-keepalive туннельного сервера (период 30 с,
-  обнаружение — около 5 минут), поэтому такой запрос может закончиться `502`.
-
+MIT — see [`LICENSE`](LICENSE).

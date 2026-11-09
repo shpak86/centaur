@@ -10,6 +10,7 @@ import (
 	"time"
 )
 
+// httpServerOps holds the address and HTTP timeouts for ApiServer.
 type httpServerOps struct {
 	Address           string
 	ReadHeaderTimeout time.Duration
@@ -18,12 +19,16 @@ type httpServerOps struct {
 	IdleTimeout       time.Duration
 }
 
+// ApiServer serves the tunnel pool's HTTP API: health checks and tunnel
+// registration.
 type ApiServer struct {
 	httpServer  *http.Server
 	authManager *AuthManager
 	registry    *Registry
 }
 
+// NewApiServer creates the tunnel pool HTTP API server protected by API-key
+// authentication.
 func NewApiServer(
 	ops httpServerOps,
 	authManager *AuthManager,
@@ -47,6 +52,7 @@ func NewApiServer(
 	return &server
 }
 
+// ListenAndServe starts the API server and blocks until it stops.
 func (s *ApiServer) ListenAndServe() error {
 	slog.Info("tunnel api server listening", "address", s.httpServer.Addr)
 	if err := s.httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -55,6 +61,7 @@ func (s *ApiServer) ListenAndServe() error {
 	return nil
 }
 
+// Stop gracefully shuts down the API server.
 func (s *ApiServer) Stop(ctx context.Context) error {
 	slog.Info("tunnel api server stopping")
 	return s.httpServer.Shutdown(ctx)
@@ -106,6 +113,8 @@ func (s *ApiServer) handleRegisterTunnel(w http.ResponseWriter, r *http.Request)
 	}
 }
 
+// AuthMiddleware wraps next with an API-key check: a request without a valid
+// ApiKey header gets 403.
 func AuthMiddleware(next http.Handler, authManager *AuthManager) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		apiKey := r.Header.Get("ApiKey")

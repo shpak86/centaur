@@ -14,39 +14,42 @@ import (
 	"github.com/shpak86/centaur/internal/metrics"
 )
 
-// Состояния туннеля в реестре: pending — зарегистрирован, но соединение ещё не
-// привязано (ждём handshake), ready — соединение есть, туннель готов принять
-// запрос. Те же значения использует метрика centaur_gateway_tunnels{state}.
+// Tunnel states in the registry: pending — registered but the connection is not
+// bound yet (awaiting handshake), ready — the connection exists and the tunnel
+// is ready to accept a request. The centaur_gateway_tunnels{state} metric uses
+// the same values.
 const (
 	statePending = "pending"
 	stateReady   = "ready"
 )
 
-// pendingTTL — сколько регистрация может ждать handshake. Коннектор дожимает
-// регистрацию и dial в одной функции (см. internal/tunnel/client.go), поэтому
-// запас здесь заведомо больше суммы dialTimeout и retryDelay: туннель без
-// соединения так долго живёт только если коннектор упал между этими шагами.
-// Если TTL всё же сработает раньше Bind, привязка вернёт ошибку, коннектор
-// повторит регистрацию — самоисправление ценой bind_errors.
+// pendingTTL is how long a registration may wait for the handshake. The
+// connector performs registration and dial in a single function (see
+// internal/tunnel/client.go), so the margin here is deliberately larger than
+// the sum of dialTimeout and retryDelay: a tunnel without a connection lives
+// this long only if the connector crashed between those steps. If the TTL does
+// fire before Bind, the binding returns an error and the connector retries the
+// registration — self-healing at the cost of bind_errors.
 const pendingTTL = 30 * time.Second
 
-// Registry хранит зарегистрированные туннели и выдаёт их по одному на запрос.
-// Туннели одноразовые: при выдаче туннель удаляется из реестра, а после ответа
-// соединение закрывается и коннектор регистрирует новый. Возврата в реестр нет.
+// Registry stores registered tunnels and hands them out one per request.
+// Tunnels are single-use: on hand-out the tunnel is removed from the registry,
+// and after the response the connection is closed and the connector registers a
+// new one. There is no return to the registry.
 //
-// Мёртвых туннелей реестр за собой не оставляет: при выдаче соединение
-// проверяется на живость (Tunnel.alive), а Sweep периодически вычищает то, что
-// осталось без трафика. Иначе туннель убитого коннектора числится ready и
-// выдаётся клиенту, а тот получает 502 на запись в мёртвое соединение.
+// The registry does not leave dead tunnels behind: on hand-out the connection
+// is checked for liveness (Tunnel.alive), and Sweep periodically removes what
+// has seen no traffic. Otherwise a dead connector's tunnel would count as ready
+// and be handed to a client, which would then get a 502 writing to a dead
+// connection.
 type Registry struct {
 	tunnels map[string]*Tunnel
 	metrics *metrics.Metrics
 	mu      sync.Mutex
 }
 
-// NewRegistry создаёт реестр туннелей. m может быть nil — тогда реестр работает
-// без метрик (например, в точечных тестах); состояние пула в таком случае не
-// экспортируется.
+// NewRegistry creates a tunnel registry. m may be nil — the registry then works
+// without metrics (e.g. in focused tests), and the pool state is not exported.
 func NewRegistry(m *metrics.Metrics) *Registry {
 	r := &Registry{
 		tunnels: make(map[string]*Tunnel),
@@ -58,6 +61,8 @@ func NewRegistry(m *metrics.Metrics) *Registry {
 	return r
 }
 
+// Register records a new tunnel for the given models and returns its id. The
+// tunnel starts in the pending state until Bind attaches a connection.
 func (r *Registry) Register(models []string) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -71,7 +76,7 @@ func (r *Registry) Register(models []string) string {
 	return id
 }
 
-// Bind привязывает соединение коннектора к зарегистрированному туннелю.
+// Bind attaches a connector's connection to the registered tunnel.
 func (r *Registry) Bind(id string, conn *net.TCPConn) error {
 	if conn == nil {
 		r.recordBindError()
@@ -92,23 +97,25 @@ func (r *Registry) Bind(id string, conn *net.TCPConn) error {
 	return nil
 }
 
-// Tunnels отдаёт итератор по текущему содержимому реестра. Занятые туннели
-// в него не попадают: они удаляются при выдаче из Acquire.
+// Tunnels returns an iterator over the current registry contents. Tunnels that
+// are in use do not appear: they are removed on hand-out by Acquire.
 func (r *Registry) Tunnels() iter.Seq[*Tunnel] {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return maps.Values(r.tunnels)
 }
 
-// Acquire отдаёт туннель, поддерживающий model, и сразу удаляет его из реестра:
-// туннель одноразовый, повторного обращения к нему не будет.
-// Туннель попадает в реестр до Bind, поэтому пока Conn == nil, он пропускается:
-// отдать его нельзя — RoundTrip писал бы в неготовое соединение.
-// Мёртвые туннели (коннектор упал или закрыл соединение) выбрасываются по ходу
-// поиска: клиенту нельзя отдать соединение, в которое уже некому писать, —
-// вместо 502 он получит 503 и повторит запрос.
-// Подходящего туннеля нет — (nil, false): ждать нечего, честнее сразу
-// ответить 503, чем держать запрос в таймауте.
+// Acquire hands out a tunnel that supports model and immediately removes it from
+// the registry: tunnels are single-use, so it will never be requested again.
+// A tunnel enters the registry before Bind, so while Conn == nil it is skipped:
+// it cannot be handed out — RoundTrip would write to a connection that is not
+// ready.
+// Dead tunnels (the connector crashed or closed the connection) are dropped
+// during the search: a connection nobody can write to must not reach a client —
+// instead of a 502 it gets a 503 and retries the request.
+// If no matching tunnel exists, the result is (nil, false): there is nothing to
+// wait for, and it is more honest to answer 503 right away than to keep the
+// request waiting until a timeout.
 func (r *Registry) Acquire(model string) (*Tunnel, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -135,12 +142,12 @@ func (r *Registry) Acquire(model string) (*Tunnel, bool) {
 	return nil, false
 }
 
-// Sweep вычищает из реестра туннели, которых уже нет: соединения, закрытые
-// коннектором (в том числе после его падения), и регистрации, до handshake
-// которых коннектор не дожил. Вызывается периодически из Service: при нулевом
-// трафике Acquire не срабатывает, и без свипа мёртвый туннель занимал бы место
-// в пуле, а метрика состояния пула врала бы.
-// Возвращает число выброшенных туннелей — для лога.
+// Sweep removes tunnels that no longer exist from the registry: connections the
+// connector closed (including after a crash) and registrations whose handshake
+// never happened. It is called periodically by Service: with no traffic Acquire
+// never runs, and without the sweep a dead tunnel would occupy a pool slot while
+// the pool state metric lied.
+// It returns the number of dropped tunnels — for logging.
 func (r *Registry) Sweep() (dropped int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -165,8 +172,8 @@ func (r *Registry) Sweep() (dropped int) {
 	return dropped
 }
 
-// drop удаляет туннель из реестра (вызывается под r.mu) и закрывает его
-// соединение, если оно было, — так освобождается дескриптор.
+// drop removes the tunnel from the registry (called under r.mu) and closes its
+// connection, if any, to release the descriptor.
 func (r *Registry) drop(id string, t *Tunnel) {
 	if t.Conn != nil {
 		if err := t.Conn.Close(); err != nil {
@@ -176,22 +183,23 @@ func (r *Registry) drop(id string, t *Tunnel) {
 	delete(r.tunnels, id)
 }
 
-// recordStale увеличивает счётчик выброшенных туннелей, если метрики включены.
+// recordStale increments the dropped-tunnel counter when metrics are enabled.
 func (r *Registry) recordStale(state string) {
 	if r.metrics != nil {
 		r.metrics.TunnelStale.WithLabelValues(state).Inc()
 	}
 }
 
-// recordBindError увеличивает счётчик ошибок привязки, если метрики включены.
+// recordBindError increments the bind-error counter when metrics are enabled.
 func (r *Registry) recordBindError() {
 	if r.metrics != nil {
 		r.metrics.TunnelBindErrors.Inc()
 	}
 }
 
-// counts возвращает число туннелей в состоянии pending (Conn == nil, ждём
-// handshake) и ready (есть соединение). Используется коллектором состояния пула.
+// counts returns the number of tunnels in the pending state (Conn == nil,
+// awaiting handshake) and the ready state (connection present). Used by the pool
+// state collector.
 func (r *Registry) counts() (pending, ready int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

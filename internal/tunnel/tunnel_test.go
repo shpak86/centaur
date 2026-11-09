@@ -7,9 +7,9 @@ import (
 	"time"
 )
 
-// TestAliveTrueForIdleTunnel: туннель, лежащий в реестре, молчит — это его
-// нормальное состояние, и проба обязана считать такое соединение живым. Иначе
-// gateway выбрасывал бы все туннели подряд.
+// TestAliveTrueForIdleTunnel: a tunnel sitting in the registry is silent — that
+// is its normal state, and the probe must consider such a connection alive.
+// Otherwise the gateway would throw away every tunnel in a row.
 func TestAliveTrueForIdleTunnel(t *testing.T) {
 	conn, _ := newTCPConn(t)
 
@@ -18,9 +18,9 @@ func TestAliveTrueForIdleTunnel(t *testing.T) {
 	}
 }
 
-// TestAliveFalseForClosedTunnel: коннектор закрыл соединение (FIN) — туннель
-// мёртв. EOF ждём чтением: после него проба видит закрытие всегда, независимо
-// от гонки с доставкой FIN.
+// TestAliveFalseForClosedTunnel: the connector closed the connection (FIN) — the
+// tunnel is dead. We wait for EOF by reading: after it the probe always sees the
+// closure, regardless of the race with FIN delivery.
 func TestAliveFalseForClosedTunnel(t *testing.T) {
 	conn, client := newTCPConn(t)
 	if err := client.Close(); err != nil {
@@ -37,8 +37,9 @@ func TestAliveFalseForClosedTunnel(t *testing.T) {
 	}
 }
 
-// TestAliveFalseForResetTunnel: коннектор убит, соединение оборвано (RST) —
-// чтение отдаёт ошибку, а не EOF, и туннель тоже мёртв.
+// TestAliveFalseForResetTunnel: the connector was killed, the connection was
+// reset (RST) — the read returns an error rather than EOF, and the tunnel is dead
+// too.
 func TestAliveFalseForResetTunnel(t *testing.T) {
 	conn, client := newTCPConn(t)
 	if err := client.SetLinger(0); err != nil {
@@ -58,9 +59,8 @@ func TestAliveFalseForResetTunnel(t *testing.T) {
 	}
 }
 
-// TestAliveFalseForTunnelWithUnexpectedData: в покое туннель молчит, поэтому
-// любые данные в потоке означают, что это уже не тот туннель, за которого он
-// себя выдаёт.
+// TestAliveFalseForTunnelWithUnexpectedData: at rest a tunnel is silent, so any
+// data in the stream means this is no longer the tunnel it claims to be.
 func TestAliveFalseForTunnelWithUnexpectedData(t *testing.T) {
 	conn, client := newTCPConn(t)
 	tunnel := NewTunnel("id", conn, nil)
@@ -69,7 +69,7 @@ func TestAliveFalseForTunnelWithUnexpectedData(t *testing.T) {
 		t.Fatalf("write to tunnel: %v", err)
 	}
 
-	// Данные могут дойти не мгновенно, поэтому ждём (не дольше секунды).
+	// The data may not arrive instantly, so we wait (no longer than a second).
 	deadline := time.Now().Add(time.Second)
 	for tunnel.alive() {
 		if time.Now().After(deadline) {

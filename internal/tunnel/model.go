@@ -8,11 +8,11 @@ import (
 	"net/http"
 )
 
-// maxModelBodyBytes ограничивает тело, которое читаем ради имени модели:
-// /api/chat с картинками (images) бывает в десятки мегабайт.
+// maxModelBodyBytes limits the body read to extract the model name: /api/chat
+// with images can be tens of megabytes.
 const maxModelBodyBytes = 1 << 20
 
-// modelPaths — ручки, в теле запроса которых клиент передаёт имя модели.
+// modelPaths are the endpoints whose request body carries the model name.
 var modelPaths = map[string]struct{}{
 	"/api/generate":        {},
 	"/api/chat":            {},
@@ -23,18 +23,19 @@ var modelPaths = map[string]struct{}{
 	"/v1/embeddings":       {},
 }
 
-// modelBody — минимальная часть тела запроса, нужная для маршрутизации.
+// modelBody is the minimal part of a request body needed for routing.
 type modelBody struct {
 	Model string `json:"model"`
 }
 
-// getModel читает тело запроса на модельных ручках и возвращает имя модели.
-// Тело при этом не теряется: оно целиком возвращается в req.Body, потому что
-// RoundTrip следом пишет его в туннель через req.Write.
+// getModel reads the request body on model endpoints and returns the model name.
+// The body is not lost: it is put back into req.Body in full, because RoundTrip
+// writes it to the tunnel afterwards through req.Write.
 //
-// Пустая строка без ошибки означает, что модели в запросе нет: ручка не
-// модельная, тело пустое/сжатое/больше лимита или в JSON нет поля model.
-// Ошибка возвращается, если тело не удалось прочитать или разобрать как JSON.
+// An empty string with a nil error means the request has no model: the endpoint
+// is not a model endpoint, the body is empty/compressed/over the limit, or the
+// JSON has no "model" field. An error is returned when the body cannot be read
+// or parsed as JSON.
 func getModel(req *http.Request) (string, error) {
 	if req.Method != http.MethodPost || req.Body == nil {
 		return "", nil
@@ -42,13 +43,14 @@ func getModel(req *http.Request) (string, error) {
 	if _, ok := modelPaths[req.URL.Path]; !ok {
 		return "", nil
 	}
-	// Сжатое тело не разобрать без распаковки, а пересылать его надо как есть.
+	// A compressed body cannot be parsed without decompressing it, and it must
+	// be forwarded as is.
 	if req.Header.Get("Content-Encoding") != "" {
 		return "", nil
 	}
 
 	body := req.Body
-	// Читаем на байт больше лимита, чтобы отличить «ровно лимит» от «больше».
+	// Read one byte past the limit to tell "exactly the limit" from "over it".
 	buf, err := io.ReadAll(io.LimitReader(body, maxModelBodyBytes+1))
 	if err != nil {
 		return "", fmt.Errorf("read request body: %w", err)
@@ -58,8 +60,8 @@ func getModel(req *http.Request) (string, error) {
 	}
 
 	if len(buf) > maxModelBodyBytes {
-		// Тело слишком большое: модель не достаём, но прочитанный префикс
-		// возвращаем в поток, чтобы запрос ушёл в туннель целиком.
+		// The body is too large: skip the model but put the read prefix back
+		// into the stream so the whole request reaches the tunnel.
 		req.Body = readCloser{
 			Reader: io.MultiReader(bytes.NewReader(buf), body),
 			Closer: body,
@@ -67,10 +69,10 @@ func getModel(req *http.Request) (string, error) {
 		return "", nil
 	}
 
-	// Восстанавливаем тело: его пишет req.Write в RoundTrip.
-	// ContentLength обязателен: Request.Write берёт длину из него, а при нуле
-	// с непустым телом запрос ушёл бы chunked-ом. GetBody держим валидным,
-	// чтобы запрос оставался корректным для повторной отправки.
+	// Restore the body: req.Write writes it in RoundTrip.
+	// ContentLength is required: Request.Write takes the length from it, and
+	// with zero and a non-empty body the request would go out chunked. GetBody
+	// is kept valid so the request stays correct for a resend.
 	req.ContentLength = int64(len(buf))
 	req.Body = io.NopCloser(bytes.NewReader(buf))
 	req.GetBody = func() (io.ReadCloser, error) {
@@ -84,7 +86,7 @@ func getModel(req *http.Request) (string, error) {
 	return parsed.Model, nil
 }
 
-// readCloser соединяет прочитанный префикс с остатком тела, сохраняя Close.
+// readCloser joins the read prefix with the rest of the body, keeping Close.
 type readCloser struct {
 	io.Reader
 	io.Closer

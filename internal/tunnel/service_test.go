@@ -9,8 +9,8 @@ import (
 	"time"
 )
 
-// newTestService собирает Service без запуска серверов: NewService только
-// конструирует объекты, поэтому для проверки Handle этого достаточно.
+// newTestService assembles a Service without starting the servers: NewService
+// only constructs objects, which is enough to test Handle.
 func newTestService() *Service {
 	return NewService("127.0.0.1:0", "127.0.0.1:0", nil)
 }
@@ -29,9 +29,9 @@ func TestHandleRootHealth(t *testing.T) {
 	}
 }
 
-// TestHandleRejectsNonInferenceEndpoints проверяет, что инфо/админ-ручки Ollama
-// gateway не проксирует: подходящего туннеля нет, поэтому запрос не должен
-// доходить до прокси и не занимать туннель.
+// TestHandleRejectsNonInferenceEndpoints checks that the gateway does not proxy
+// Ollama's info/admin endpoints: there is no matching tunnel, so the request must
+// not reach the proxy or occupy a tunnel.
 func TestHandleRejectsNonInferenceEndpoints(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -66,8 +66,8 @@ func TestHandleRejectsNonInferenceEndpoints(t *testing.T) {
 	}
 }
 
-// TestHandleInferenceWithoutTunnel проверяет, что инференс-ручки по-прежнему
-// идут в прокси: без свободного туннеля получаем 503, а не 501.
+// TestHandleInferenceWithoutTunnel checks that inference endpoints still go to
+// the proxy: with no free tunnel we get a 503, not a 501.
 func TestHandleInferenceWithoutTunnel(t *testing.T) {
 	service := newTestService()
 
@@ -80,17 +80,18 @@ func TestHandleInferenceWithoutTunnel(t *testing.T) {
 	}
 }
 
-// TestHandleRecordsMetrics проверяет, что Handle пишет запросы в метрики
-// gateway (эндпоинт + HTTP-статус), а /metrics отдаёт их в формате Prometheus.
+// TestHandleRecordsMetrics checks that Handle records requests in the gateway
+// metrics (endpoint + HTTP status) and that /metrics serves them in the
+// Prometheus format.
 func TestHandleRecordsMetrics(t *testing.T) {
 	service := newTestService()
 
-	// health «/» → 200.
+	// health "/" → 200.
 	service.Handle(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
-	// инференс без свободного туннеля → 503 + учёт промаха.
+	// inference with no free tunnel → 503 + the miss is counted.
 	service.Handle(httptest.NewRecorder(), httptest.NewRequest(
 		http.MethodPost, "/api/generate", strings.NewReader(`{"model":"llama3:8b","prompt":"hi"}`)))
-	// не-инференс-ручка → 501 и схлопывается в endpoint="other".
+	// a non-inference endpoint → 501 and collapses into endpoint="other".
 	service.Handle(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/tags", nil))
 
 	rec := httptest.NewRecorder()
@@ -112,11 +113,11 @@ func TestHandleRecordsMetrics(t *testing.T) {
 	}
 }
 
-// TestHandleInferenceWithDeadTunnel: мёртвый туннель не доходит до клиента.
-// Раньше такой запрос уходил в закрытое соединение и клиент получал 502
-// «tunnel error»; теперь туннель выбрасывается из пула, а ответ — 503, после
-// которого клиент повторяет запрос (коннектор к этому моменту регистрирует
-// новые туннели).
+// TestHandleInferenceWithDeadTunnel: a dead tunnel never reaches the client.
+// Previously such a request went into a closed connection and the client got a
+// 502 "tunnel error"; now the tunnel is dropped from the pool and the response is
+// a 503, after which the client retries (by then the connector registers new
+// tunnels).
 func TestHandleInferenceWithDeadTunnel(t *testing.T) {
 	service := newTestService()
 	registerDeadBound(t, service.registry, "llama3:8b")
@@ -133,11 +134,12 @@ func TestHandleInferenceWithDeadTunnel(t *testing.T) {
 	}
 }
 
-// TestSweepLoopDropsStaleTunnels: фоновая вычистка сама убирает туннель убитого
-// коннектора и завершается по отмене контекста (это же делает Stop).
+// TestSweepLoopDropsStaleTunnels: the background sweep drops the tunnel of a
+// killed connector on its own and terminates when the context is cancelled (which
+// is what Stop does).
 func TestSweepLoopDropsStaleTunnels(t *testing.T) {
 	service := newTestService()
-	// Период сокращён: тест не должен ждать настоящий sweepInterval.
+	// The period is shortened: the test should not wait for the real sweepInterval.
 	service.sweepEvery = 10 * time.Millisecond
 	registerDeadBound(t, service.registry, "llama3:8b")
 

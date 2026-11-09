@@ -4,9 +4,10 @@ package tunnel
 
 import "syscall"
 
-// peekClosed на платформах без MSG_PEEK (Windows) посмотреть во входящий поток,
-// ничего не потребляя, не умеет, поэтому считает соединение живым: реестр там
-// мёртвые туннели не вычищает — как было до появления пробы.
+// peekClosed cannot peek at the incoming stream without consuming it on
+// platforms without MSG_PEEK (Windows), so it treats the connection as alive:
+// the registry does not sweep dead tunnels there - as it was before the probe
+// existed.
 func peekClosed(_ syscall.RawConn) bool {
 	return false
 }

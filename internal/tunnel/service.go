@@ -17,26 +17,30 @@ import (
 	"github.com/shpak86/centaur/internal/metrics"
 )
 
-// requestWriteTimeout ограничивает запись запроса в туннель: если коннектор
-// не читает (мёртвый туннель), не ждём вечно. На чтение ответа дедлайна нет,
-// чтобы не рвать длинные стриминговые ответы Ollama.
+// requestWriteTimeout limits writing the request into a tunnel: if the connector
+// is not reading (a dead tunnel), we do not wait forever. Reading the response
+// has no deadline, so as not to cut short long streaming responses from Ollama.
 const requestWriteTimeout = 30 * time.Second
 
-// sweepInterval — период фоновой вычистки мёртвых туннелей из реестра. Горячий
-// путь защищён пробой в Acquire, поэтому интервал влияет только на честность
-// метрики состояния пула и на время жизни дескрипторов мёртвых соединений.
+// sweepInterval is the period of the background sweep of dead tunnels from the
+// registry. The hot path is protected by the probe in Acquire, so the interval
+// affects only the honesty of the pool state metric and the lifetime of dead
+// connection descriptors.
 const sweepInterval = 5 * time.Second
 
-// pastDeadline — дедлайн в прошлом: так разблокируется заблокированное чтение.
+// pastDeadline is a deadline in the past: it unblocks a blocked read.
 var pastDeadline = time.Unix(1, 0)
 
-// errNoTunnel возвращается, когда в пуле нет свободных туннелей.
+// errNoTunnel is returned when the pool has no free tunnels.
 var errNoTunnel = errors.New("no free tunnel")
 
-// errBadRequestBody возвращается, когда тело запроса на модельную ручку
-// не разбирается как JSON: прокси отвечает 400, не занимая туннель.
+// errBadRequestBody is returned when the body of a model endpoint request cannot
+// be parsed as JSON: the proxy answers 400 without occupying a tunnel.
 var errBadRequestBody = errors.New("bad request body")
 
+// Service is the gateway side of the tunnel pool: it serves the tunnel
+// registration API, accepts tunnel connections, and proxies client requests to
+// them.
 type Service struct {
 	apiServer    *ApiServer
 	tunnelServer *TunnelServer
@@ -45,11 +49,14 @@ type Service struct {
 	metrics      *metrics.Metrics
 	ctx          context.Context
 	cancel       context.CancelFunc
-	// sweepEvery — период вычистки мёртвых туннелей; в обычной работе равен
-	// sweepInterval, в тестах сокращается.
+	// sweepEvery is the dead-tunnel sweep period; it equals sweepInterval in
+	// normal operation and is shortened in tests.
 	sweepEvery time.Duration
 }
 
+// NewService creates a tunnel-pool service listening on apiAddr (the
+// registration HTTP API) and tunnelAddr (the TCP pool). apiKeys is the list of
+// accepted connector API keys.
 func NewService(apiAddr, tunnelAddr string, apiKeys []string) *Service {
 	httpOps := httpServerOps{
 		Address:           apiAddr,
@@ -76,13 +83,13 @@ func NewService(apiAddr, tunnelAddr string, apiKeys []string) *Service {
 	return &service
 }
 
-// newTunnelProxy собирает обратный прокси, который отправляет запрос в туннель.
-// httputil.ReverseProxy сам разбирает входящий запрос и сериализует его заново
-// (тело при этом стримится), поэтому не нужны ни hijack клиентского
-// соединения, ни ручной разбор HTTP.
+// newTunnelProxy builds the reverse proxy that sends a request into a tunnel.
+// httputil.ReverseProxy parses the incoming request and re-serializes it itself
+// (streaming the body), so neither hijacking the client connection nor manual
+// HTTP parsing is needed.
 func newTunnelProxy(registry *Registry) *httputil.ReverseProxy {
-	// Адрес фиктивный: транспорт всё равно подключается к сокету туннеля,
-	// но ReverseProxy требует абсолютный URL.
+	// The address is fictitious: the transport always dials the tunnel socket
+	// anyway, but ReverseProxy requires an absolute URL.
 	target := &url.URL{Scheme: "http", Host: "tunnel"}
 
 	return &httputil.ReverseProxy{
@@ -90,7 +97,7 @@ func newTunnelProxy(registry *Registry) *httputil.ReverseProxy {
 			pr.SetURL(target)
 		},
 
-		// Для NDJSON-стриминга Ollama: отправлять каждый кусок сразу.
+		// For Ollama's NDJSON streaming: flush every chunk immediately.
 		FlushInterval: -1,
 
 		Transport: &tunnelTransport{registry: registry},
@@ -112,39 +119,40 @@ func newTunnelProxy(registry *Registry) *httputil.ReverseProxy {
 	}
 }
 
-// tunnelTransport отправляет каждый запрос в отдельный туннель.
-// Туннели одноразовые: после ответа соединение закрывается, а коннектор
-// регистрирует новый туннель — так переподключение не зависит от того,
-// что происходит с клиентским соединением.
+// tunnelTransport sends each request into a separate tunnel.
+// Tunnels are single-use: after the response the connection is closed and the
+// connector registers a new tunnel — so reconnection does not depend on what
+// happens to the client connection.
 type tunnelTransport struct {
 	registry *Registry
 }
 
 func (t *tunnelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	// Имя модели нужно для маршрутизации, поэтому тело читается до Acquire:
-	// на битом теле отвечаем 400, не занимая туннель. getModel возвращает
-	// тело обратно в req.Body — ниже его пишет req.Write.
+	// The model name is needed for routing, so the body is read before Acquire:
+	// a broken body yields 400 without occupying a tunnel. getModel puts the
+	// body back into req.Body — req.Write writes it below.
 	model, err := getModel(req)
 	if err != nil {
 		return nil, err
 	}
 
-	// Туннели одноразовые: если подходящего туннеля сейчас нет, сразу отдаём
-	// errNoTunnel (503) — повторять запрос или нет, решает клиент.
+	// Tunnels are single-use: if no matching tunnel is free right now, return
+	// errNoTunnel (503) immediately — whether to retry is up to the client.
 	tunnel, exists := t.registry.Acquire(model)
 	if !exists {
 		return nil, errNoTunnel
 	}
 
-	// Клиент мог отвалиться, пока мы ждём ответ: закрываем туннель,
-	// чтобы разблокировать чтение и не терять соединение.
+	// The client may have disconnected while we wait for the response: close the
+	// tunnel to unblock the read and avoid losing the connection.
 	stopWatch := context.AfterFunc(req.Context(), func() {
 		tunnel.Conn.SetReadDeadline(pastDeadline)
 	})
 	defer stopWatch()
 
-	// Просим коннектор закрыть туннель после ответа (Connection: close):
-	// туннель остаётся одноразовым и не висит в ожидании следующего запроса.
+	// Ask the connector to close the tunnel after the response (Connection:
+	// close): the tunnel stays single-use and does not linger waiting for the
+	// next request.
 	req.Close = true
 
 	tunnel.Conn.SetWriteDeadline(time.Now().Add(requestWriteTimeout))
@@ -173,13 +181,13 @@ func (t *tunnelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		"remote", tunnel.Conn.RemoteAddr().String(),
 		"status", resp.Status)
 
-	// Туннель освобождаем вместе с телом ответа: к этому моменту оно прочитано.
+	// Release the tunnel together with the response body: by then it is read.
 	resp.Body = &tunnelBody{ReadCloser: resp.Body, tunnel: tunnel, registry: t.registry}
 
 	return resp, nil
 }
 
-// tunnelBody закрывает одноразовый туннель, когда тело ответа дочитано.
+// tunnelBody closes the single-use tunnel once the response body is fully read.
 type tunnelBody struct {
 	io.ReadCloser
 	once     sync.Once
@@ -195,9 +203,12 @@ func (b *tunnelBody) Close() error {
 	return err
 }
 
+// ListenAndServe starts the tunnel API and TCP servers and blocks until both
+// stop.
 func (s *Service) ListenAndServe() error {
-	// Свипер идёт отдельной горутиной, а не в общем WaitGroup: завершается он
-	// по отмене контекста (Stop или defer ниже), и wg.Wait() ждал бы его вечно.
+	// The sweeper runs in its own goroutine rather than in the shared WaitGroup:
+	// it exits on context cancellation (Stop or the defer below), and wg.Wait()
+	// would otherwise wait for it forever.
 	defer s.cancel()
 	go s.sweepLoop(s.ctx)
 
@@ -218,8 +229,8 @@ func (s *Service) ListenAndServe() error {
 	return nil
 }
 
-// sweepLoop периодически вычищает мёртвые туннели из реестра: без этого туннель
-// убитого коннектора остаётся в пуле «готовым» и выдаётся клиенту.
+// sweepLoop periodically removes dead tunnels from the registry: otherwise a
+// dead connector's tunnel stays "ready" in the pool and is handed to a client.
 func (s *Service) sweepLoop(ctx context.Context) {
 	ticker := time.NewTicker(s.sweepEvery)
 	defer ticker.Stop()
@@ -236,9 +247,10 @@ func (s *Service) sweepLoop(ctx context.Context) {
 	}
 }
 
+// Stop gracefully shuts down the tunnel API and TCP servers.
 func (s *Service) Stop(ctx context.Context) error {
-	// Сначала свипер, потом серверы: иначе он ходил бы в реестр во время
-	// остановки.
+	// The sweeper first, then the servers: otherwise it would touch the registry
+	// during shutdown.
 	s.cancel()
 
 	errs := make([]error, 0, 2)
@@ -251,17 +263,18 @@ func (s *Service) Stop(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// MetricsHandler отдаёт метрики gateway в текстовом формате Prometheus.
-// Его обслуживает отдельный MetricsServer на metrics.address (GET /metrics),
-// а не клиентский прокси proxy.address.
+// MetricsHandler returns the gateway metrics in the Prometheus text format.
+// It is served by a separate MetricsServer on metrics.address (GET /metrics),
+// not by the client proxy on proxy.address.
 func (s *Service) MetricsHandler() http.Handler {
 	return s.metrics.Handler()
 }
 
-// Handle проксирует клиентский запрос в свободный туннель.
-// Проксируются только инференс-ручки (modelPaths): gateway выполняет инференс,
-// а не управляет удалённой Ollama, поэтому инфо/админ-ручки (tags, ps, show,
-// pull, push, create, copy, delete, /v1/models) он не проксирует и отвечает 501.
+// Handle proxies a client request into a free tunnel.
+// Only inference endpoints (modelPaths) are proxied: the gateway performs
+// inference rather than managing a remote Ollama, so it does not proxy
+// info/admin endpoints (tags, ps, show, pull, push, create, copy, delete,
+// /v1/models) and answers 501 instead.
 func (s *Service) Handle(w http.ResponseWriter, r *http.Request) {
 	endpoint := endpointLabel(r.URL.Path)
 	rec := &statusRecorder{ResponseWriter: w}
@@ -271,8 +284,8 @@ func (s *Service) Handle(w http.ResponseWriter, r *http.Request) {
 		s.metrics.RequestDuration.WithLabelValues(endpoint).Observe(time.Since(start).Seconds())
 	}()
 
-	// GET / — проверка живости gateway: Ollama-клиенты пингуют корень.
-	// Отвечаем сами, в туннель не ходим.
+	// GET / is the gateway liveness check: Ollama clients ping the root.
+	// Answer it ourselves without going into a tunnel.
 	if r.Method == http.MethodGet && r.URL.Path == "/" {
 		rec.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		if _, err := rec.Write([]byte("Centaur is running")); err != nil {
@@ -290,8 +303,8 @@ func (s *Service) Handle(w http.ResponseWriter, r *http.Request) {
 	s.proxy.ServeHTTP(rec, r)
 }
 
-// endpointLabel ограничивает кардинальность метрик: инференс-ручки идут по
-// своему пути, рут — как есть, всё остальное схлопывается в "other".
+// endpointLabel bounds metric cardinality: inference endpoints use their own
+// path, the root is used as is, and everything else collapses into "other".
 func endpointLabel(path string) string {
 	if path == "/" {
 		return path
@@ -302,9 +315,9 @@ func endpointLabel(path string) string {
 	return "other"
 }
 
-// statusRecorder запоминает HTTP-статус ответа для метрик. Реализует
-// http.Flusher и Unwrap: без этого обёртка сломала бы стриминг NDJSON, который
-// ReverseProxy флашит через http.NewResponseController.
+// statusRecorder records the HTTP response status for metrics. It implements
+// http.Flusher and Unwrap: without them the wrapper would break NDJSON
+// streaming, which ReverseProxy flushes via http.NewResponseController.
 type statusRecorder struct {
 	http.ResponseWriter
 	status int

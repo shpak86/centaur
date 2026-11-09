@@ -15,34 +15,37 @@ import (
 	"github.com/shpak86/centaur/internal/tunnel"
 )
 
-// shutdownTimeout ограничивает время, отведённое клиенту на graceful shutdown.
+// shutdownTimeout limits the time given to the client for a graceful shutdown.
 const shutdownTimeout = 10 * time.Second
 
-// ClientConfiguration описывает содержимое файла конфигурации,
-// который передаётся в -config (по умолчанию /etc/centaur/connector.json).
+// ClientConfiguration describes the contents of the configuration file passed
+// to -config (default /etc/centaur/connector.json).
 type ClientConfiguration struct {
 	Logger LoggerConfiguration `json:"logger"`
 	Pool   PoolConfiguration   `json:"pool"`
 	Target TargetConfiguration `json:"target"`
 }
 
+// LoggerConfiguration describes the logger settings.
 type LoggerConfiguration struct {
-	// Level — уровень логирования: debug, info, warn или error.
+	// Level is the log level: debug, info, warn or error.
 	Level string `json:"level"`
 }
 
+// PoolConfiguration describes the tunnel pool the connector connects to.
 type PoolConfiguration struct {
-	// ApiAddress — адрес HTTP API пула туннелей.
+	// ApiAddress is the address of the tunnel pool HTTP API.
 	ApiAddress string `json:"apiAddress"`
-	// Address — адрес, на котором пул туннелей принимает соединения.
+	// Address is the address where the tunnel pool accepts connections.
 	Address string `json:"address"`
 	ApiKey  string `json:"key"`
 	Tunnels int    `json:"tunnels"`
 }
 
+// TargetConfiguration describes the local service requests are proxied to.
 type TargetConfiguration struct {
-	// Address — URL локального сервиса (например, Ollama),
-	// куда коннектор проксирует запросы из туннеля.
+	// Address is the URL of the local service (for example, Ollama) that the
+	// connector proxies tunnel requests to.
 	Address string   `json:"address"`
 	Models  []string `json:"models"`
 }
@@ -72,8 +75,9 @@ func validateConfig(config ClientConfiguration) error {
 		return fmt.Errorf("pool.address is required")
 	case config.Pool.ApiAddress == "":
 		return fmt.Errorf("pool.apiAddress is required")
-	// gateway ждёт здесь listen-адрес, а коннектору нужен URL со схемой:
-	// без неё url.JoinPath в клиенте падает и коннектор молча ретраится.
+	// The gateway expects a listen address here, while the connector needs a URL
+	// with a scheme: without it url.JoinPath in the client fails and the
+	// connector silently retries.
 	case !isURL(config.Pool.ApiAddress):
 		return fmt.Errorf("pool.apiAddress must be an URL with scheme like http://127.0.0.1:8082, got %q", config.Pool.ApiAddress)
 	case config.Target.Address == "":
@@ -86,7 +90,7 @@ func validateConfig(config ClientConfiguration) error {
 	return nil
 }
 
-// isURL проверяет, что адрес — абсолютный URL со схемой и хостом.
+// isURL reports whether address is an absolute URL with a scheme and host.
 func isURL(address string) bool {
 	u, err := url.Parse(address)
 	return err == nil && u.Scheme != "" && u.Host != ""
@@ -108,7 +112,7 @@ func prepareLogger(config LoggerConfiguration) error {
 
 func main() {
 
-	// -config — путь к файлу конфигурации коннектора.
+	// -config is the path to the connector configuration file.
 	configPath := flag.String("config", "/etc/centaur/connector.json", "Configuration path")
 	flag.Parse()
 
@@ -125,7 +129,7 @@ func main() {
 
 	slog.Info("configuration loaded", "path", *configPath)
 
-	// shutdownCtx отменяется по SIGINT/SIGTERM (или когда клиент завершился сам).
+	// shutdownCtx is cancelled by SIGINT/SIGTERM (or when the client finishes on its own).
 	shutdownCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -143,24 +147,24 @@ func main() {
 		"targetAddress", config.Target.Address,
 	)
 
-	// Serve блокируется, пока работает текущий туннель, поэтому держим его
-	// в отдельной горутине и ждём сигнала в main.
+	// Serve blocks while the current tunnel is running, so it runs in a separate
+	// goroutine while main waits for a signal.
 	served := make(chan struct{})
 	go func() {
 		defer close(served)
 		client.Serve()
-		// клиент больше не работает — будим main, если он ждёт сигнал
+		// the client is no longer running — wake main if it is waiting for a signal
 		stop()
 	}()
 
 	<-shutdownCtx.Done()
-	// возвращаем обработку сигналов по умолчанию:
-	// повторный SIGINT/SIGTERM завершит процесс сразу
+	// restore the default signal handling:
+	// a second SIGINT/SIGTERM will terminate the process immediately
 	stop()
 	slog.Info("shutting down")
 
-	// Close отменяет контекст клиента: новые туннели уже не поднимаются,
-	// текущему даём shutdownTimeout на завершение (in-flight запросы).
+	// Close cancels the client's context: new tunnels are no longer brought up,
+	// and the current one is given shutdownTimeout to finish (in-flight requests).
 	client.Close()
 
 	select {

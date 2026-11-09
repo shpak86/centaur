@@ -7,12 +7,13 @@ import (
 	"syscall"
 )
 
-// peekClosed смотрит во входящий поток сокета, не потребляя данные, и отвечает
-// на вопрос «соединение закрыто?»: FIN от коннектора — это 0 байт, обрыв — это
-// ошибка (RST и подобное), а живой молчащий сокет отвечает EAGAIN.
+// peekClosed peeks at the socket's incoming stream without consuming data and
+// answers "is the connection closed?": a FIN from the connector is 0 bytes, a
+// reset is an error (RST and the like), and a live silent socket returns
+// EAGAIN.
 //
-// Ничего не потребляется (MSG_PEEK), поэтому проба безопасна в том числе если
-// в потоке что-то есть: решение о судьбе соединения принимает вызывающий.
+// Nothing is consumed (MSG_PEEK), so the probe is safe even when data is
+// already present in the stream: the caller decides the connection's fate.
 func peekClosed(raw syscall.RawConn) bool {
 	closed := false
 
@@ -21,23 +22,23 @@ func peekClosed(raw syscall.RawConn) bool {
 		n, _, err := syscall.Recvfrom(int(fd), probe[:], syscall.MSG_PEEK|syscall.MSG_DONTWAIT)
 		switch {
 		case errors.Is(err, syscall.EAGAIN), errors.Is(err, syscall.EWOULDBLOCK):
-			// Данных нет: соединение живо и молчит — то, что нужно.
+			// No data: the connection is alive and silent - just what we want.
 			closed = false
 		case err != nil:
-			// Обрыв: RST, ENOTCONN и прочее.
+			// Reset: RST, ENOTCONN and the like.
 			closed = true
 		case n > 0:
-			// В покое туннель молчит, поэтому данные означают, что это уже не
-			// тот туннель, за которого он себя выдаёт.
+			// At rest a tunnel is silent, so data means this is no longer the
+			// tunnel it claims to be.
 			closed = true
 		default:
-			// n == 0 — коннектор закрыл соединение (FIN).
+			// n == 0: the connector closed the connection (FIN).
 			closed = true
 		}
 	})
 	if err != nil {
-		// Соединение закрыто или закрывается (Control не даёт дескриптор),
-		// проверять нечего.
+		// The connection is closed or closing (Control cannot get the file
+		// descriptor), so there is nothing to check.
 		return true
 	}
 

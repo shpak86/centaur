@@ -2,19 +2,19 @@ package tunnel
 
 import "github.com/prometheus/client_golang/prometheus"
 
-// tunnelStateDesc описывает gauge centaur_gateway_tunnels{state}: сколько
-// туннелей сейчас в реестре в состоянии pending (ждём handshake) и ready
-// (готов принять запрос).
+// tunnelStateDesc describes the centaur_gateway_tunnels{state} gauge: how many
+// tunnels are currently in the registry in the pending (awaiting handshake) and
+// ready (able to accept a request) states.
 var tunnelStateDesc = prometheus.NewDesc(
 	prometheus.BuildFQName("centaur", "gateway", "tunnels"),
-	"Туннели, зарегистрированные в gateway, по состоянию: pending или ready.",
+	"Tunnels registered in the gateway by state: pending or ready.",
 	[]string{"state"},
 	nil,
 )
 
-// tunnelStateCollector считает состояние пула прямо на момент сбора под
-// мьютексом реестра: так метрика не «плывёт» из-за обрывов соединений и
-// всегда совпадает с содержимым реестра.
+// tunnelStateCollector computes the pool state at collection time under the
+// registry mutex, so the metric cannot drift because of connection drops and
+// always matches the registry contents.
 type tunnelStateCollector struct {
 	registry *Registry
 }
