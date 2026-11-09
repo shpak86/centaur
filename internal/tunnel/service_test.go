@@ -1,10 +1,12 @@
 package tunnel
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // newTestService собирает Service без запуска серверов: NewService только
@@ -107,5 +109,53 @@ func TestHandleRecordsMetrics(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("metrics output does not contain %q\n%s", want, body)
 		}
+	}
+}
+
+// TestHandleInferenceWithDeadTunnel: мёртвый туннель не доходит до клиента.
+// Раньше такой запрос уходил в закрытое соединение и клиент получал 502
+// «tunnel error»; теперь туннель выбрасывается из пула, а ответ — 503, после
+// которого клиент повторяет запрос (коннектор к этому моменту регистрирует
+// новые туннели).
+func TestHandleInferenceWithDeadTunnel(t *testing.T) {
+	service := newTestService()
+	registerDeadBound(t, service.registry, "llama3:8b")
+
+	rec := httptest.NewRecorder()
+	body := strings.NewReader(`{"model":"llama3:8b","prompt":"hi"}`)
+	service.Handle(rec, httptest.NewRequest(http.MethodPost, "/api/generate", body))
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+	}
+	if got := rec.Body.String(); !strings.Contains(got, "no free tunnel") {
+		t.Fatalf("body = %q, want contain %q", got, "no free tunnel")
+	}
+}
+
+// TestSweepLoopDropsStaleTunnels: фоновая вычистка сама убирает туннель убитого
+// коннектора и завершается по отмене контекста (это же делает Stop).
+func TestSweepLoopDropsStaleTunnels(t *testing.T) {
+	service := newTestService()
+	// Период сокращён: тест не должен ждать настоящий sweepInterval.
+	service.sweepEvery = 10 * time.Millisecond
+	registerDeadBound(t, service.registry, "llama3:8b")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		service.sweepLoop(ctx)
+	}()
+
+	waitEmptyRegistry(t, service.registry, time.Second)
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("sweepLoop did not stop on context cancel")
 	}
 }

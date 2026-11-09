@@ -31,6 +31,13 @@ prometheus ──▶ gateway (metrics.address, GET /metrics)
 параллельно — в простое они готовы принять запрос, под нагрузкой обслуживают
 до `pool.tunnels` запросов одновременно.
 
+Пул не раздаёт мёртвые туннели. Перед выдачей gateway заглядывает во входящий
+поток соединения (не потребляя данные) и выбрасывает туннель, если коннектор
+закрыл или оборвал соединение; тот же обход реестра раз в `sweepInterval`
+(5 секунд) убирает туннели, до которых не дошёл трафик. Без этого после падения
+коннектора его туннели оставались бы в пуле «готовыми», выдавались бы клиентам, и
+те получали бы `502` на запись в закрытое соединение.
+
 ## Как это работает
 
 1. Коннектор отправляет `POST /api/v1/tunnels/register` на HTTP API пула
@@ -138,9 +145,16 @@ curl -s -X POST http://127.0.0.1:18180/api/generate \
 curl -s http://127.0.0.1:18183/metrics | grep '^centaur_gateway'
 ```
 
+## Docker-стенд
+
+Полный стенд в Docker (gateway + 2 коннектора + 2 инстанса Ollama с
+запечёнными в образ моделями + Prometheus + Grafana) лежит в
+`deployment/docker/` — порядок сборки, порты и проверки описаны в
+[`deployment/docker/README.md`](deployment/docker/README.md).
+
 ## Конфигурация
 
-### Gateway (`-config`, по умолчанию `/etc/centaur/server.json`)
+### Gateway (`-config`, по умолчанию `/etc/centaur/gateway.json`)
 
 ```json
 {
@@ -224,6 +238,7 @@ Gateway отдаёт метрики Prometheus на `GET /metrics` — на **о
 | `centaur_gateway_tunnel_bind_errors_total` | counter | — | Ошибки привязки соединения к туннелю (handshake) |
 | `centaur_gateway_tunnel_acquire_misses_total` | counter | — | Запросы, которым не досталось свободного туннеля (`503`) |
 | `centaur_gateway_tunnels` | gauge | `state` (`pending` / `ready`) | Сколько туннелей сейчас в реестре |
+| `centaur_gateway_tunnel_stale_total` | counter | `state` (`pending` / `ready`) | Туннели, вычищенные из реестра: соединение мертво (`ready`) или handshake не состоялся (`pending`) |
 
 `endpoint` ограничен по кардинальности: инференс-ручки идут по своему пути,
 `/` — health gateway, всё прочее схлопывается в `other`. Дополнительно
@@ -246,4 +261,8 @@ curl -s http://127.0.0.1:18183/metrics | grep '^centaur_gateway'
 - Туннели одноразовые, и их число ограничено `pool.tunnels`: если параллельных
   запросов больше, лишние получают `503`, пока коннектор поднимает новые
   туннели.
+- Мёртвые туннели пул находит по закрытию соединения (FIN/RST) — при выдаче
+  туннеля и раз в `sweepInterval`. Обрыв без FIN/RST («чёрная дыра»: связь
+  пропала молча) виден только TCP-keepalive туннельного сервера (период 30 с,
+  обнаружение — около 5 минут), поэтому такой запрос может закончиться `502`.
 

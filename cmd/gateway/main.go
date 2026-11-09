@@ -20,7 +20,7 @@ import (
 const shutdownTimeout = 10 * time.Second
 
 // ServerConfiguration описывает содержимое файла конфигурации,
-// который передаётся в -config (по умолчанию /etc/centaur/server.json).
+// который передаётся в -config (по умолчанию /etc/centaur/gateway.json).
 type ServerConfiguration struct {
 	Logger  LoggerConfiguration  `json:"logger"`
 	Proxy   ProxyConfiguration   `json:"proxy"`
@@ -109,7 +109,7 @@ func prepareLogger(config LoggerConfiguration) error {
 }
 
 func main() {
-	configPath := flag.String("config", "/etc/centaur/server.json", "Configuration path")
+	configPath := flag.String("config", "/etc/centaur/gateway.json", "Configuration path")
 	flag.Parse()
 
 	config, err := loadConfig(*configPath)

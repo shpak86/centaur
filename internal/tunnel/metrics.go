@@ -29,6 +29,6 @@ func (c *tunnelStateCollector) Describe(ch chan<- *prometheus.Desc) {
 
 func (c *tunnelStateCollector) Collect(ch chan<- prometheus.Metric) {
 	pending, ready := c.registry.counts()
-	ch <- prometheus.MustNewConstMetric(tunnelStateDesc, prometheus.GaugeValue, float64(pending), "pending")
-	ch <- prometheus.MustNewConstMetric(tunnelStateDesc, prometheus.GaugeValue, float64(ready), "ready")
+	ch <- prometheus.MustNewConstMetric(tunnelStateDesc, prometheus.GaugeValue, float64(pending), statePending)
+	ch <- prometheus.MustNewConstMetric(tunnelStateDesc, prometheus.GaugeValue, float64(ready), stateReady)
 }

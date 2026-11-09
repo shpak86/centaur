@@ -31,6 +31,9 @@ type Metrics struct {
 	TunnelBindErrors prometheus.Counter
 	// TunnelAcquireMisses — запросы, которым не досталось свободного туннеля.
 	TunnelAcquireMisses prometheus.Counter
+	// TunnelStale — туннели, вычищенные из пула по состоянию (ready —
+	// соединение мертво, pending — handshake не завершён).
+	TunnelStale *prometheus.CounterVec
 }
 
 // New создаёт реестр метрик вместе с коллекторами рантайма Go и процесса.
@@ -73,6 +76,13 @@ func New() *Metrics {
 		Help:      "Запросы, для которых не нашлось свободного туннеля (ответ 503).",
 	})
 
+	m.TunnelStale = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "centaur",
+		Subsystem: "gateway",
+		Name:      "tunnel_stale_total",
+		Help:      "Туннели, вычищенные из пула: соединение мертво (ready) или handshake не завершён (pending).",
+	}, []string{"state"})
+
 	m.registry.MustRegister(
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
@@ -81,6 +91,7 @@ func New() *Metrics {
 		m.TunnelRegistrations,
 		m.TunnelBindErrors,
 		m.TunnelAcquireMisses,
+		m.TunnelStale,
 	)
 	return &m
 }

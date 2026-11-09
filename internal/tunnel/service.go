@@ -22,6 +22,11 @@ import (
 // чтобы не рвать длинные стриминговые ответы Ollama.
 const requestWriteTimeout = 30 * time.Second
 
+// sweepInterval — период фоновой вычистки мёртвых туннелей из реестра. Горячий
+// путь защищён пробой в Acquire, поэтому интервал влияет только на честность
+// метрики состояния пула и на время жизни дескрипторов мёртвых соединений.
+const sweepInterval = 5 * time.Second
+
 // pastDeadline — дедлайн в прошлом: так разблокируется заблокированное чтение.
 var pastDeadline = time.Unix(1, 0)
 
@@ -38,6 +43,11 @@ type Service struct {
 	registry     *Registry
 	proxy        *httputil.ReverseProxy
 	metrics      *metrics.Metrics
+	ctx          context.Context
+	cancel       context.CancelFunc
+	// sweepEvery — период вычистки мёртвых туннелей; в обычной работе равен
+	// sweepInterval, в тестах сокращается.
+	sweepEvery time.Duration
 }
 
 func NewService(apiAddr, tunnelAddr string, apiKeys []string) *Service {
@@ -55,7 +65,8 @@ func NewService(apiAddr, tunnelAddr string, apiKeys []string) *Service {
 		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
-	service := Service{}
+	service := Service{sweepEvery: sweepInterval}
+	service.ctx, service.cancel = context.WithCancel(context.Background())
 	service.metrics = metrics.New()
 	service.registry = NewRegistry(service.metrics)
 	authManager := NewAuthManager(apiKeys)
@@ -185,6 +196,11 @@ func (b *tunnelBody) Close() error {
 }
 
 func (s *Service) ListenAndServe() error {
+	// Свипер идёт отдельной горутиной, а не в общем WaitGroup: завершается он
+	// по отмене контекста (Stop или defer ниже), и wg.Wait() ждал бы его вечно.
+	defer s.cancel()
+	go s.sweepLoop(s.ctx)
+
 	wg := sync.WaitGroup{}
 	wg.Go(func() {
 		err := s.apiServer.ListenAndServe()
@@ -202,7 +218,29 @@ func (s *Service) ListenAndServe() error {
 	return nil
 }
 
+// sweepLoop периодически вычищает мёртвые туннели из реестра: без этого туннель
+// убитого коннектора остаётся в пуле «готовым» и выдаётся клиенту.
+func (s *Service) sweepLoop(ctx context.Context) {
+	ticker := time.NewTicker(s.sweepEvery)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if dropped := s.registry.Sweep(); dropped > 0 {
+				slog.Info("Sweep stale tunnels", "dropped", dropped)
+			}
+		}
+	}
+}
+
 func (s *Service) Stop(ctx context.Context) error {
+	// Сначала свипер, потом серверы: иначе он ходил бы в реестр во время
+	// остановки.
+	s.cancel()
+
 	errs := make([]error, 0, 2)
 	if err := s.apiServer.Stop(ctx); err != nil {
 		errs = append(errs, fmt.Errorf("stop api server: %w", err))

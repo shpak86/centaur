@@ -9,13 +9,35 @@ import (
 	"net"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/shpak86/centaur/internal/metrics"
 )
 
+// Состояния туннеля в реестре: pending — зарегистрирован, но соединение ещё не
+// привязано (ждём handshake), ready — соединение есть, туннель готов принять
+// запрос. Те же значения использует метрика centaur_gateway_tunnels{state}.
+const (
+	statePending = "pending"
+	stateReady   = "ready"
+)
+
+// pendingTTL — сколько регистрация может ждать handshake. Коннектор дожимает
+// регистрацию и dial в одной функции (см. internal/tunnel/client.go), поэтому
+// запас здесь заведомо больше суммы dialTimeout и retryDelay: туннель без
+// соединения так долго живёт только если коннектор упал между этими шагами.
+// Если TTL всё же сработает раньше Bind, привязка вернёт ошибку, коннектор
+// повторит регистрацию — самоисправление ценой bind_errors.
+const pendingTTL = 30 * time.Second
+
 // Registry хранит зарегистрированные туннели и выдаёт их по одному на запрос.
 // Туннели одноразовые: при выдаче туннель удаляется из реестра, а после ответа
 // соединение закрывается и коннектор регистрирует новый. Возврата в реестр нет.
+//
+// Мёртвых туннелей реестр за собой не оставляет: при выдаче соединение
+// проверяется на живость (Tunnel.alive), а Sweep периодически вычищает то, что
+// осталось без трафика. Иначе туннель убитого коннектора числится ready и
+// выдаётся клиенту, а тот получает 502 на запись в мёртвое соединение.
 type Registry struct {
 	tunnels map[string]*Tunnel
 	metrics *metrics.Metrics
@@ -82,6 +104,9 @@ func (r *Registry) Tunnels() iter.Seq[*Tunnel] {
 // туннель одноразовый, повторного обращения к нему не будет.
 // Туннель попадает в реестр до Bind, поэтому пока Conn == nil, он пропускается:
 // отдать его нельзя — RoundTrip писал бы в неготовое соединение.
+// Мёртвые туннели (коннектор упал или закрыл соединение) выбрасываются по ходу
+// поиска: клиенту нельзя отдать соединение, в которое уже некому писать, —
+// вместо 502 он получит 503 и повторит запрос.
 // Подходящего туннеля нет — (nil, false): ждать нечего, честнее сразу
 // ответить 503, чем держать запрос в таймауте.
 func (r *Registry) Acquire(model string) (*Tunnel, bool) {
@@ -90,6 +115,12 @@ func (r *Registry) Acquire(model string) (*Tunnel, bool) {
 
 	for id, t := range r.tunnels {
 		if t.Conn == nil {
+			continue
+		}
+		if !t.alive() {
+			slog.Info("Drop dead tunnel", "id", id, "models", t.Models)
+			r.recordStale(stateReady)
+			r.drop(id, t)
 			continue
 		}
 		if slices.Contains(t.Models, model) {
@@ -102,6 +133,54 @@ func (r *Registry) Acquire(model string) (*Tunnel, bool) {
 		r.metrics.TunnelAcquireMisses.Inc()
 	}
 	return nil, false
+}
+
+// Sweep вычищает из реестра туннели, которых уже нет: соединения, закрытые
+// коннектором (в том числе после его падения), и регистрации, до handshake
+// которых коннектор не дожил. Вызывается периодически из Service: при нулевом
+// трафике Acquire не срабатывает, и без свипа мёртвый туннель занимал бы место
+// в пуле, а метрика состояния пула врала бы.
+// Возвращает число выброшенных туннелей — для лога.
+func (r *Registry) Sweep() (dropped int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for id, t := range r.tunnels {
+		var state string
+		switch {
+		case t.Conn == nil && time.Since(t.RegisteredAt) > pendingTTL:
+			state = statePending
+		case t.Conn != nil && !t.alive():
+			state = stateReady
+		default:
+			continue
+		}
+
+		slog.Info("Drop stale tunnel", "id", id, "state", state, "models", t.Models)
+		r.recordStale(state)
+		r.drop(id, t)
+		dropped++
+	}
+
+	return dropped
+}
+
+// drop удаляет туннель из реестра (вызывается под r.mu) и закрывает его
+// соединение, если оно было, — так освобождается дескриптор.
+func (r *Registry) drop(id string, t *Tunnel) {
+	if t.Conn != nil {
+		if err := t.Conn.Close(); err != nil {
+			slog.Debug("Close stale tunnel", "id", id, "error", err)
+		}
+	}
+	delete(r.tunnels, id)
+}
+
+// recordStale увеличивает счётчик выброшенных туннелей, если метрики включены.
+func (r *Registry) recordStale(state string) {
+	if r.metrics != nil {
+		r.metrics.TunnelStale.WithLabelValues(state).Inc()
+	}
 }
 
 // recordBindError увеличивает счётчик ошибок привязки, если метрики включены.
