@@ -16,33 +16,46 @@ import (
 	"github.com/shpak86/centaur/internal/api"
 )
 
-// shutdownTimeout ограничивает время, отведённое серверам на graceful shutdown.
+// shutdownTimeout limits the time given to the servers for a graceful shutdown.
 const shutdownTimeout = 10 * time.Second
 
-// ServerConfiguration описывает содержимое файла конфигурации,
-// который передаётся в -config (по умолчанию /etc/centaur/server.json).
+// ServerConfiguration describes the contents of the configuration file passed
+// to -config (default /etc/centaur/gateway.json).
 type ServerConfiguration struct {
-	Logger LoggerConfiguration `json:"logger"`
-	Proxy  ProxyConfiguration  `json:"proxy"`
-	Pool   PoolConfiguration   `json:"pool"`
+	Logger  LoggerConfiguration  `json:"logger"`
+	Proxy   ProxyConfiguration   `json:"proxy"`
+	Metrics MetricsConfiguration `json:"metrics"`
+	Pool    PoolConfiguration    `json:"pool"`
 }
 
+// LoggerConfiguration describes the logger settings.
 type LoggerConfiguration struct {
-	// Level — уровень логирования: debug, info, warn или error.
+	// Level is the log level: debug, info, warn or error.
 	Level string `json:"level"`
 }
 
+// ProxyConfiguration describes the client-facing listener.
 type ProxyConfiguration struct {
-	// Address — адрес, на котором gateway принимает клиентские запросы.
+	// Address is the address where the gateway accepts client requests.
 	Address string `json:"address"`
 }
 
-type PoolConfiguration struct {
-	// ApiAddress — listen-адрес HTTP API пула туннелей (host:port, без схемы):
-	// на нём gateway принимает регистрации туннелей от коннекторов.
-	ApiAddress string `json:"apiAddress"`
-	// Address — адрес, на котором пул туннелей принимает соединения.
+// MetricsConfiguration describes the Prometheus metrics listener.
+type MetricsConfiguration struct {
+	// Address is the listen address of the Prometheus metrics HTTP server
+	// (host:port, no scheme). It is separate from proxy.address so metrics do
+	// not share the client traffic.
 	Address string `json:"address"`
+}
+
+// PoolConfiguration describes the tunnel pool listeners.
+type PoolConfiguration struct {
+	// ApiAddress is the listen address of the tunnel pool HTTP API (host:port,
+	// no scheme): the gateway accepts tunnel registrations from connectors here.
+	ApiAddress string `json:"apiAddress"`
+	// Address is the address where the tunnel pool accepts connections.
+	Address string   `json:"address"`
+	ApiKeys []string `json:"keys"`
 }
 
 func loadConfig(path string) (ServerConfiguration, error) {
@@ -68,12 +81,18 @@ func validateConfig(config ServerConfiguration) error {
 	switch {
 	case config.Proxy.Address == "":
 		return fmt.Errorf("proxy.address is required")
+	// This is the metrics listen address, not a URL: a server with a scheme in
+	// its address simply would not start.
+	case config.Metrics.Address == "":
+		return fmt.Errorf("metrics.address is required")
+	case strings.Contains(config.Metrics.Address, "://"):
+		return fmt.Errorf("metrics.address must be a listen address like 127.0.0.1:18183, got URL %q", config.Metrics.Address)
 	case config.Pool.Address == "":
 		return fmt.Errorf("pool.address is required")
 	case config.Pool.ApiAddress == "":
 		return fmt.Errorf("pool.apiAddress is required")
-	// В отличие от коннектора, здесь apiAddress — listen-адрес, а не URL:
-	// сервер со схемой в адресе просто не поднялся бы.
+	// Unlike in the connector, apiAddress here is a listen address, not a URL:
+	// a server with a scheme in its address simply would not start.
 	case strings.Contains(config.Pool.ApiAddress, "://"):
 		return fmt.Errorf("pool.apiAddress must be a listen address like 127.0.0.1:8082, got URL %q", config.Pool.ApiAddress)
 	}
@@ -95,7 +114,7 @@ func prepareLogger(config LoggerConfiguration) error {
 }
 
 func main() {
-	configPath := flag.String("config", "/etc/centaur/server.json", "Configuration path")
+	configPath := flag.String("config", "/etc/centaur/gateway.json", "Configuration path")
 	flag.Parse()
 
 	config, err := loadConfig(*configPath)
@@ -111,7 +130,7 @@ func main() {
 
 	slog.Info("configuration loaded", "path", *configPath)
 
-	// shutdownCtx отменяется по SIGINT/SIGTERM (или когда сервер упал сам).
+	// shutdownCtx is cancelled by SIGINT/SIGTERM (or when a server dies on its own).
 	shutdownCtx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -119,21 +138,37 @@ func main() {
 		config.Proxy.Address,
 		config.Pool.ApiAddress,
 		config.Pool.Address,
+		config.Pool.ApiKeys,
 	)
-	var serveErr error
+	// Metrics live on a separate server and port (metrics.address) so they do
+	// not mix with the client traffic on proxy.address.
+	metricsServer := api.NewMetricsServer(config.Metrics.Address, proxyServer.MetricsHandler())
+
+	var (
+		proxyErr   error
+		metricsErr error
+	)
 	wg := sync.WaitGroup{}
 	wg.Go(func() {
-		serveErr = proxyServer.ListenAndServe()
-		if serveErr != nil {
-			slog.Error("Proxy server", "error", serveErr)
+		proxyErr = proxyServer.ListenAndServe()
+		if proxyErr != nil {
+			slog.Error("Proxy server", "error", proxyErr)
 		}
-		// сервер больше не работает — будим main, если он ждёт сигнал
+		// the server is no longer running — wake main if it is waiting for a signal
+		stop()
+	})
+	wg.Go(func() {
+		metricsErr = metricsServer.ListenAndServe()
+		if metricsErr != nil {
+			slog.Error("Metrics server", "error", metricsErr)
+		}
+		// the server is no longer running — wake main if it is waiting for a signal
 		stop()
 	})
 
 	<-shutdownCtx.Done()
-	// возвращаем обработку сигналов по умолчанию:
-	// повторный SIGINT/SIGTERM завершит процесс сразу
+	// restore the default signal handling:
+	// a second SIGINT/SIGTERM will terminate the process immediately
 	stop()
 	slog.Info("shutting down")
 
@@ -142,11 +177,14 @@ func main() {
 	if err := proxyServer.Stop(stopCtx); err != nil {
 		slog.Error("Proxy server shutdown", "error", err)
 	}
+	if err := metricsServer.Stop(stopCtx); err != nil {
+		slog.Error("Metrics server shutdown", "error", err)
+	}
 
 	wg.Wait()
 	slog.Info("stopped")
 
-	if serveErr != nil {
+	if proxyErr != nil || metricsErr != nil {
 		os.Exit(1)
 	}
 }

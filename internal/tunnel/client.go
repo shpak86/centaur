@@ -16,14 +16,16 @@ import (
 )
 
 const (
-	// retryDelay — пауза перед повторной попыткой поднять туннель.
+	// retryDelay is the pause before retrying to bring up a tunnel.
 	retryDelay = time.Second
-	// registerTimeout ограничивает запрос регистрации в пуле туннелей.
+	// registerTimeout limits the registration request to the tunnel pool.
 	registerTimeout = 10 * time.Second
-	// dialTimeout ограничивает подключение к серверу туннелей.
+	// dialTimeout limits connecting to the tunnel server.
 	dialTimeout = 5 * time.Second
 )
 
+// Client is the connector side: it holds the configured number of tunnels open
+// to the pool and proxies the requests arriving over them to the local Ollama.
 type Client struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -34,13 +36,20 @@ type Client struct {
 	models     []string
 	transport  *http.Transport
 	proxy      *httputil.ReverseProxy
+	tunnels    int
 }
 
-func NewClient(apiAddr, tunnelAddr, targetAddr string) *Client {
+// NewClient creates a connector client. apiAddr is the pool registration API,
+// tunnelAddr is the pool's TCP server, targetAddr is the local Ollama to proxy
+// to, and tunnels is the number of tunnels to hold open.
+func NewClient(apiAddr, tunnelAddr, targetAddr, apiKey string, models []string, tunnels int) *Client {
 	client := Client{
 		apiAddr:    apiAddr,
 		tunnelAddr: tunnelAddr,
 		targetAddr: targetAddr,
+		apiKey:     apiKey,
+		models:     models,
+		tunnels:    tunnels,
 		transport: &http.Transport{
 			MaxIdleConns:          100,
 			MaxIdleConnsPerHost:   100,
@@ -53,9 +62,9 @@ func NewClient(apiAddr, tunnelAddr, targetAddr string) *Client {
 	return &client
 }
 
-// newOllamaProxy собирает прокси, который отправляет приходящие из туннеля
-// запросы в Ollama. Прокси и транспорт общие для всех туннелей: иначе на каждый
-// туннель создавалось бы своё соединение к Ollama и файловые дескрипторы текли.
+// newOllamaProxy builds the proxy that forwards requests arriving from a tunnel
+// to Ollama. The proxy and transport are shared by all tunnels: otherwise each
+// tunnel would create its own connection to Ollama and leak file descriptors.
 func newOllamaProxy(targetAddr string, transport http.RoundTripper) *httputil.ReverseProxy {
 	target, err := url.Parse(targetAddr)
 	if err != nil {
@@ -69,7 +78,7 @@ func newOllamaProxy(targetAddr string, transport http.RoundTripper) *httputil.Re
 			pr.Out.Host = target.Host
 		},
 
-		// Для NDJSON-стриминга Ollama: отправлять каждый кусок сразу.
+		// For Ollama's NDJSON streaming: flush every chunk immediately.
 		FlushInterval: -1,
 
 		Transport: transport,
@@ -81,7 +90,19 @@ func newOllamaProxy(targetAddr string, transport http.RoundTripper) *httputil.Re
 	}
 }
 
+// Serve runs the connector until Close: it holds tunnels open and serves the
+// requests that arrive over them.
 func (c *Client) Serve() {
+	var wg sync.WaitGroup
+	for range c.tunnels { // range-over-int (go.mod: 1.27)
+		wg.Add(1)
+		go func() { defer wg.Done(); c.serveLoop() }()
+	}
+	wg.Wait()
+}
+
+// serveLoop keeps a single tunnel alive, re-establishing it as needed.
+func (c *Client) serveLoop() {
 	for {
 		select {
 		case <-c.ctx.Done():
@@ -107,8 +128,8 @@ func (c *Client) serveTunnel() error {
 		return err
 	}
 
-	// Контекст привязан к жизни клиента: Close() прерывает регистрацию,
-	// а таймаут не даёт зависнуть на недоступном API пула.
+	// The context is tied to the client's lifetime: Close interrupts the
+	// registration, and the timeout prevents hanging on an unreachable pool API.
 	ctx, cancel := context.WithTimeout(c.ctx, registerTimeout)
 	defer cancel()
 
@@ -119,6 +140,7 @@ func (c *Client) serveTunnel() error {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("ApiKey", c.apiKey)
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -161,12 +183,13 @@ func (c *Client) serveTunnel() error {
 		c.pause(retryDelay)
 		return err
 	}
-	// handshake завершён: gateway знает про туннель и может отдать его клиенту
+	// Handshake complete: the gateway knows about the tunnel and can hand it to
+	// a client.
 	return c.startOllamaBridge(conn)
 }
 
-// pause ждёт d или завершения клиента через Close(),
-// чтобы остановка не ждала retryDelay.
+// pause waits for d or for the client to finish via Close, so that shutdown
+// does not wait for retryDelay.
 func (c *Client) pause(d time.Duration) {
 	select {
 	case <-c.ctx.Done():
@@ -174,8 +197,8 @@ func (c *Client) pause(d time.Duration) {
 	}
 }
 
-// Close останавливает клиент: Serve перестаёт поднимать новые туннели,
-// а соединения к Ollama, простаивающие в пуле транспорта, закрываются.
+// Close stops the client: Serve stops bringing up new tunnels, and idle
+// connections to Ollama in the transport pool are closed.
 func (c *Client) Close() {
 	c.cancel()
 	c.transport.CloseIdleConnections()
@@ -209,10 +232,10 @@ func (l *singleConnListener) Addr() net.Addr {
 	return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0}
 }
 
-// trackedConn сообщает, когда http.Server закрыл соединение туннеля.
-// Это единственный надёжный признак конца туннеля: singleConnListener отдаёт
-// ровно одно соединение, поэтому после его обслуживания Serve навсегда
-// остаётся в Accept и сам не вернётся.
+// trackedConn signals when http.Server has closed the tunnel connection.
+// This is the only reliable sign of the tunnel's end: singleConnListener yields
+// exactly one connection, so after serving it Serve stays in Accept forever and
+// never returns on its own.
 type trackedConn struct {
 	net.Conn
 	once sync.Once
@@ -233,19 +256,19 @@ func (c *Client) startOllamaBridge(conn net.Conn) error {
 		return errors.New("ollama proxy is not configured")
 	}
 
-	// ReadHeaderTimeout не задаём: туннель одноразовый и может простаивать
-	// сколько угодно, пока gateway не отдаст ему запрос (или не закроет
-	// соединение). Дедлайн на заголовки убивал бы такой туннель, оставляя
-	// в реестре gateway мёртвую запись — первый запрос после паузы получал
-	// бы 502.
+	// ReadHeaderTimeout is not set: a tunnel is single-use and may sit idle for
+	// as long as it takes for the gateway to hand it a request (or close the
+	// connection). A header deadline would kill such a tunnel, leaving a dead
+	// entry in the gateway registry — the first request after a pause would then
+	// get a 502.
 	server := &http.Server{
 		Handler: c.proxy,
-		// ReadTimeout и WriteTimeout тоже не задавайте:
-		// генерация Ollama может длиться долго.
+		// ReadTimeout and WriteTimeout are not set either:
+		// an Ollama generation can take a long time.
 	}
 
-	// Serve обслуживает единственное соединение туннеля, поэтому держим его
-	// в горутине, а завершение туннеля ждём по trackedConn.done (или по Close()).
+	// Serve handles the tunnel's single connection, so it runs in a goroutine
+	// while we wait for the tunnel's end via trackedConn.done (or Close).
 	tracked := newTrackedConn(conn)
 	listener := newSingleConnListener(tracked)
 
@@ -257,19 +280,19 @@ func (c *Client) startOllamaBridge(conn net.Conn) error {
 	}()
 
 	select {
-	case <-tracked.done: // gateway закончил или оборвал соединение
+	case <-tracked.done: // the gateway finished or dropped the connection
 		slog.Info("tunnel connection closed")
-	case <-served: // Serve завершился сам
+	case <-served: // Serve returned on its own
 		slog.Info("ollama bridge stopped")
-	case <-c.ctx.Done(): // останавливают коннектор
+	case <-c.ctx.Done(): // the connector is being stopped
 		slog.Info("closing ollama bridge")
 	}
 
-	// Закрываем сервер: разблокирует Accept и закрывает соединение туннеля.
+	// Close the server: it unblocks Accept and closes the tunnel connection.
 	if err := server.Close(); err != nil {
 		slog.Error("Close ollama bridge", "error", err)
 	}
-	<-served // дожидаемся выхода Serve, чтобы не терять serveErr
+	<-served // wait for Serve to return so serveErr is not lost
 
 	if serveErr != nil &&
 		!errors.Is(serveErr, http.ErrServerClosed) &&
