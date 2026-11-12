@@ -22,25 +22,49 @@ client ──▶ gateway ─────────────────▶ 
 
 ## Быстрый старт
 
-Примеры конфигов лежат в `examples/`; `pool.key` коннектора должен входить в
-`pool.keys` gateway.
+### Скачайте и распакуйте архив
 
-Запустите gateway на сервере, например `gateway.lan`. Пример конфига gateway слушает только loopback; для подключения удалённых коннекторов укажите в нём доступный сетевой адрес (например, `0.0.0.0`) и настройте разрешение имени `gateway.lan` через DNS или файл hosts.
+1. Скачайте подходящий архив для вашей ОС из [релизов](https://github.com/shpak86/centaur/releases)
+1. Распакуйте архив:
+    ```bash
+    tar -xzf centaur-linux-amd64.tar.gz
+    ```
+1. Сделайте бинарники исполняемыми:
+    ```bash
+    chmod +x centaur-linux-amd64/bin/*
+    ```
 
-```sh
-go run ./cmd/gateway -config examples/gateway.json
-```
+#### Centaur Gateway
 
-На каждом инференс-хосте запустите Ollama и убедитесь, что нужные модели доступны.
-Затем запустите коннектор с адресом `gateway.lan`, чтобы он подключился к сети
-инференса. Укажите доступные на хосте модели, чтобы gateway мог направлять запросы
-на нужный коннектор.
+1. Переместите бинарник centaur-gateway в /usr/local/bin:
+    ```bash
+    sudo cp centaur-linux-amd64/bin/centaur-gateway /usr/local/bin/centaur-gateway
+    ```
+1. Переместите конфиг gateway.json в /etc/centaur:
+    ```bash
+    sudo cp centaur-linux-amd64/config/gateway.json /etc/centaur/
+    ```
+1. Укажите параметры в gateway.json и запустите Gateway:
+    ```sh
+    centaur-gateway
+    ```
 
-```sh
-go run ./cmd/connector -config examples/connector.json
-```
+#### Centaur Connector
 
-Проверка:
+1. Переместите бинарник centaur-connector в ~/.centaur/bin:
+    ```bash
+    cp centaur-linux-amd64/bin/centaur-connector ~/.centaur/bin/centaur-connector
+    ```
+1. Переместите конфиг connector.json в ~/.centaur/config:
+    ```bash
+    cp centaur-linux-amd64/config/connector.json ~/.centaur/config/
+    ```
+1. Укажите в connector.json адрес Gateway и Ollama, корректный ключ и запустите Connector:
+    ```sh
+    ~/.centaur/bin/centaur-connector -config ~/.centaur/config/connector.json
+    ```
+
+### Проверка:
 
 ```sh
 # health gateway: отвечает сам gateway, не через туннель

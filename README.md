@@ -19,23 +19,52 @@ client ──▶ gateway ─────────────────▶ 
 - **Tunnel pool.** Each Connector maintains multiple tunnels and can serve multiple requests in parallel.
 - **A flexible pool.** Nodes can join or leave without reconfiguring the whole system.
 
+
 ## Quick start
 
-Example configs are in `examples/`. The connector's `pool.key` must be listed in the Gateway's `pool.keys`.
+### Download and unpack the archive
 
-Start the Gateway on a server, for example `gateway.lan`. The sample Gateway config binds to loopback; for remote connectors, set its listen addresses to a reachable interface (for example, `0.0.0.0`) and make `gateway.lan` resolve to that host via DNS or your hosts file.
+1. Download the archive for your OS from [releases](https://github.com/shpak86/centaur/releases)
+1. Unpack the archive:
+    ```bash
+    tar -xzf centaur-linux-amd64.tar.gz
+    ```
+1. Make the binaries executable:
+    ```bash
+    chmod +x centaur-linux-amd64/bin/*
+    ```
 
-```sh
-go run ./cmd/gateway -config examples/gateway.json
-```
+#### Centaur Gateway
 
-On each inference host, make sure Ollama is running and the configured models are available. Then start the connector with the address of `gateway.lan` so it can join the inference network. Configure the models available on each host so the Gateway can route requests to the right connector.
+1. Move the centaur-gateway binary to /usr/local/bin:
+    ```bash
+    sudo cp centaur-linux-amd64/bin/centaur-gateway /usr/local/bin/centaur-gateway
+    ```
+1. Move the gateway.json config to /etc/centaur:
+    ```bash
+    sudo cp centaur-linux-amd64/config/gateway.json /etc/centaur/
+    ```
+1. Set the parameters in gateway.json and start the Gateway:
+    ```sh
+    centaur-gateway
+    ```
 
-```sh
-go run ./cmd/connector -config examples/connector.json
-```
+#### Centaur Connector
 
-Try it:
+1. Move the centaur-connector binary to ~/.centaur/bin:
+    ```bash
+    cp centaur-linux-amd64/bin/centaur-connector ~/.centaur/bin/centaur-connector
+    ```
+1. Move the connector.json config to ~/.centaur/config:
+    ```bash
+    cp centaur-linux-amd64/config/connector.json ~/.centaur/config/
+    ```
+1. Set the Gateway and Ollama addresses and a valid key in connector.json, then start the Connector:
+    ```sh
+    ~/.centaur/bin/centaur-connector -config ~/.centaur/config/connector.json
+    ```
+
+### Try it:
 
 ```sh
 # Gateway health: answered by the Gateway itself, not through a tunnel
