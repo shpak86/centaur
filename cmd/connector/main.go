@@ -113,7 +113,7 @@ func prepareLogger(config LoggerConfiguration) error {
 func main() {
 
 	// -config is the path to the connector configuration file.
-	configPath := flag.String("config", "/etc/centaur/connector.json", "Configuration path")
+	configPath := flag.String("config", "~/.centaur/config/connector.json", "Configuration path")
 	flag.Parse()
 
 	config, err := loadConfig(*configPath)
