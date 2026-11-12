@@ -5,6 +5,9 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -12,7 +15,7 @@ jobs:
     - uses: actions/checkout@v4
 
     - name: Set up Go
-      uses: actions/setup-go@v4
+      uses: actions/setup-go@v5
       with:
         go-version: 1.27
 
@@ -20,78 +23,26 @@ jobs:
       run: |
         go test -v ./...
 
-    - name: Build Linux
+    - name: Build and package
       run: |
-        go build -o centaur-gateway-linux-amd64 ./cmd/gateway
-        go build -o centaur-connector-linux-amd64 ./cmd/connector
+        set -euo pipefail
+        for target in linux/amd64 darwin/amd64; do
+          os=${target%/*}
+          arch=${target#*/}
+          name="centaur-${os}-${arch}"
+          mkdir -p "${name}/bin" "${name}/config"
+          GOOS=${os} GOARCH=${arch} go build -o "${name}/bin/centaur-gateway" ./cmd/gateway
+          GOOS=${os} GOARCH=${arch} go build -o "${name}/bin/centaur-connector" ./cmd/connector
+          cp examples/gateway.json examples/connector.json "${name}/config/"
+          tar -czf "${name}.tar.gz" "${name}"
+        done
 
-    - name: Build macOS
-      run: |
-        GOOS=darwin GOARCH=amd64 go build -o centaur-gateway-darwin-amd64 ./cmd/gateway
-        GOOS=darwin GOARCH=amd64 go build -o centaur-connector-darwin-amd64 ./cmd/connector
-
-    - name: Build Windows
-      run: |
-        GOOS=windows GOARCH=amd64 go build -o centaur-gateway-windows-amd64.exe ./cmd/gateway
-        GOOS=windows GOARCH=amd64 go build -o centaur-connector-windows-amd64.exe ./cmd/connector
-
-    - name: Create Tar Archives
-      run: |
-        # Create archive for Linux
-        mkdir -p centaur-linux-amd64/bin centaur-linux-amd64/config
-        cp centaur-gateway-linux-amd64 centaur-connector-linux-amd64 centaur-linux-amd64/bin/
-        cp examples/gateway.json examples/connector.json centaur-linux-amd64/config
-        tar -czf centaur-linux-amd64.tar.gz centaur-linux-amd64
-        
-        # Create archive for macOS
-        mkdir -p centaur-darwin-amd64/bin centaur-darwin-amd64/config
-        cp centaur-gateway-darwin-amd64 centaur-connector-darwin-amd64 centaur-darwin-amd64/bin/
-        cp examples/gateway.json examples/connector.json centaur-darwin-amd64/config
-        tar -czf centaur-darwin-amd64.tar.gz centaur-darwin-amd64
-
-        # Create archive for Windows
-        mkdir -p centaur-windows-amd64/bin centaur-windows-amd64/config
-        cp centaur-gateway-windows-amd64.exe centaur-connector-windows-amd64.exe centaur-windows-amd64/bin/
-        cp examples/gateway.json examples/connector.json centaur-windows-amd64/config
-        tar -czf centaur-windows-amd64.tar.gz centaur-windows-amd64
-
-    - name: Create Release
-      id: create_release
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Create release
+      uses: softprops/action-gh-release@v2
       with:
-        tag_name: ${{ github.ref_name }}
-        release_name: Release ${{ github.ref_name }}
+        name: Release ${{ github.ref_name }}
         draft: false
         prerelease: false
-
-    - name: Upload Archive Linux
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./centaur-linux-amd64.tar.gz
-        asset_name: centaur-linux-amd64.tar.gz
-        asset_content_type: application/gzip
-
-    - name: Upload Archive macOS
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./centaur-darwin-amd64.tar.gz
-        asset_name: centaur-darwin-amd64.tar.gz
-        asset_content_type: application/gzip
-
-    - name: Upload Archive Windows
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ./centaur-windows-amd64.tar.gz
-        asset_name: centaur-windows-amd64.tar.gz
-        asset_content_type: application/gzip
+        files: |
+          centaur-linux-amd64.tar.gz
+          centaur-darwin-amd64.tar.gz
