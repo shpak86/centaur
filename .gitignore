@@ -1,2 +1,3 @@
-deployment/
 .vscode
+# local Docker configuration created from deployment/docker/config (holds the pool key)
+/config/

@@ -1,0 +1,18 @@
+{
+  "logger": {
+    "level": "info"
+  },
+  "proxy": {
+    "address": "0.0.0.0:18180"
+  },
+  "metrics": {
+    "address": "0.0.0.0:18183"
+  },
+  "pool": {
+    "address": "0.0.0.0:18181",
+    "apiAddress": "0.0.0.0:18182",
+    "keys": [
+      "CHANGE_ME"
+    ]
+  }
+}

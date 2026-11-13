@@ -7,8 +7,12 @@
 - gateway — по умолчанию `/etc/centaur/gateway.json`;
 - коннектор — по умолчанию `/etc/centaur/connector.json`.
 
-Примеры лежат в репозитории: [`examples/gateway.json`](../../examples/gateway.json),
-[`examples/connector.json`](../../examples/connector.json).
+Конфиги по умолчанию лежат в репозитории:
+[`deployment/packaging/config/gateway.json`](../../deployment/packaging/config/gateway.json) и
+[`deployment/packaging/config/connector.json`](../../deployment/packaging/config/connector.json);
+в релизном архиве они называются `config/gateway.json` и `config/connector.json`
+и устанавливаются в `/etc/centaur`. Варианты для контейнеров — в
+[`deployment/docker/config`](../../deployment/docker/config), см. [`docker.md`](docker.md).
 
 ## Сводка
 

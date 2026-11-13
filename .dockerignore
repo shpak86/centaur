@@ -1,0 +1,15 @@
+.git
+.github
+.gitignore
+.vscode
+# local, key-bearing config created from deployment/docker/config
+config
+# deployment assets (Dockerfiles, templates, systemd units) are not needed to
+# compile the binaries; the Dockerfiles are still read via -f
+deployment
+docs
+*.tar.gz
+checksums.txt
+README.md
+README.ru.md
+LICENSE

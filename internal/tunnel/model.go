@@ -8,10 +8,6 @@ import (
 	"net/http"
 )
 
-// maxModelBodyBytes limits the body read to extract the model name: /api/chat
-// with images can be tens of megabytes.
-const maxModelBodyBytes = 1 << 20
-
 // modelPaths are the endpoints whose request body carries the model name.
 var modelPaths = map[string]struct{}{
 	"/api/generate":        {},
@@ -33,9 +29,9 @@ type modelBody struct {
 // writes it to the tunnel afterwards through req.Write.
 //
 // An empty string with a nil error means the request has no model: the endpoint
-// is not a model endpoint, the body is empty/compressed/over the limit, or the
-// JSON has no "model" field. An error is returned when the body cannot be read
-// or parsed as JSON.
+// is not a model endpoint, the body is empty/compressed, or the JSON has no
+// "model" field. An error is returned when the body cannot be read or parsed as
+// JSON.
 func getModel(req *http.Request) (string, error) {
 	if req.Method != http.MethodPost || req.Body == nil {
 		return "", nil
@@ -49,23 +45,11 @@ func getModel(req *http.Request) (string, error) {
 		return "", nil
 	}
 
-	body := req.Body
-	// Read one byte past the limit to tell "exactly the limit" from "over it".
-	buf, err := io.ReadAll(io.LimitReader(body, maxModelBodyBytes+1))
+	buf, err := io.ReadAll(req.Body)
 	if err != nil {
 		return "", fmt.Errorf("read request body: %w", err)
 	}
 	if len(buf) == 0 {
-		return "", nil
-	}
-
-	if len(buf) > maxModelBodyBytes {
-		// The body is too large: skip the model but put the read prefix back
-		// into the stream so the whole request reaches the tunnel.
-		req.Body = readCloser{
-			Reader: io.MultiReader(bytes.NewReader(buf), body),
-			Closer: body,
-		}
 		return "", nil
 	}
 
@@ -84,10 +68,4 @@ func getModel(req *http.Request) (string, error) {
 		return "", fmt.Errorf("%w: %w", errBadRequestBody, err)
 	}
 	return parsed.Model, nil
-}
-
-// readCloser joins the read prefix with the rest of the body, keeping Close.
-type readCloser struct {
-	io.Reader
-	io.Closer
 }
