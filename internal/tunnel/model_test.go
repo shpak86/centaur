@@ -154,30 +154,32 @@ func TestRequestModelUnknownLengthSetsContentLength(t *testing.T) {
 	assertRestoredBody(t, req, body)
 }
 
-func TestRequestModelLargeBodyStaysStreamable(t *testing.T) {
-	// Valid JSON with a model, but over the limit: the model is not extracted,
-	// while the body must be passed on in full, as a stream.
-	body := `{"model":"llama3:8b","prompt":"` + strings.Repeat("x", maxModelBodyBytes) + `"}`
-
-	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(body))
-
-	model, err := getModel(req)
-	if err != nil {
-		t.Fatalf("requestModel() error = %v", err)
-	}
-	if model != "" {
-		t.Fatalf("requestModel() = %q, want empty", model)
-	}
-	if req.ContentLength != int64(len(body)) {
-		t.Fatalf("ContentLength = %d, want %d", req.ContentLength, len(body))
+func TestRequestModelLargeBodyIsParsed(t *testing.T) {
+	// A large body is parsed in full: /api/chat with images is tens of megabytes,
+	// and the model still has to be routed. The field order must not matter.
+	images := strings.Repeat("a", 4<<20)
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"model first", `{"model":"llama3:8b","images":["` + images + `"]}`},
+		{"model last", `{"images":["` + images + `"],"model":"llama3:8b"}`},
 	}
 
-	got, err := io.ReadAll(req.Body)
-	if err != nil {
-		t.Fatalf("read body: %v", err)
-	}
-	if len(got) != len(body) || string(got) != body {
-		t.Fatalf("restored body length = %d, want %d", len(got), len(body))
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(tc.body))
+
+			model, err := getModel(req)
+			if err != nil {
+				t.Fatalf("requestModel() error = %v", err)
+			}
+			if model != "llama3:8b" {
+				t.Fatalf("requestModel() = %q, want %q", model, "llama3:8b")
+			}
+
+			assertRestoredBody(t, req, tc.body)
+		})
 	}
 }
 

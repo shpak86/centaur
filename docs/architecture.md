@@ -70,6 +70,6 @@ Metrics are served at `metrics.address` (`GET /metrics`), not at `proxy.address`
 ## Design notes
 
 - The Gateway does not proxy Ollama info/admin endpoints: it runs inference; it does not manage remote Ollama instances.
-- Request bodies larger than 1 MiB (`maxModelBodyBytes`) are not parsed for a model name. This matters for `/api/chat` requests with large `images`. The body is still streamed through unchanged, but model-based routing is unavailable for such requests.
+- The request body of model endpoints is read in full to extract the model name (`internal/tunnel/model.go`): `model` may sit anywhere in the JSON, and `/api/chat` with large `images` is tens of megabytes. The body is then restored and written into the tunnel; until that moment it occupies Gateway memory.
 - WebSocket/Upgrade (`101 Switching Protocols`) is not supported through tunnels; Ollama does not use it.
 - `pool.*` means different things on each side: the Gateway **listens** on `pool.address`/`pool.apiAddress`, while the connector **dials** them. Both binaries validate address formats at startup and fail with a clear error if they are invalid.

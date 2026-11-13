@@ -1,7 +1,10 @@
 package tunnel
 
 import (
+	"bufio"
 	"context"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -131,6 +134,65 @@ func TestHandleInferenceWithDeadTunnel(t *testing.T) {
 	}
 	if got := rec.Body.String(); !strings.Contains(got, "no free tunnel") {
 		t.Fatalf("body = %q, want contain %q", got, "no free tunnel")
+	}
+}
+
+// TestRoundTripRoutesLargeBody: a body well over the old 1 MiB parse limit is
+// still routed by model and reaches the tunnel intact. Before the limit was
+// removed such a request got a 503 "no free tunnel": getModel returned an empty
+// model and Acquire("") found no tunnel for it.
+func TestRoundTripRoutesLargeBody(t *testing.T) {
+	const model = "llama3:8b"
+	body := `{"images":["` + strings.Repeat("a", 8<<20) + `"],"model":"` + model + `"}`
+
+	registry := NewRegistry(nil)
+	id := registry.Register([]string{model})
+	conn, clientConn := newTCPConn(t)
+	if err := registry.Bind(id, conn); err != nil {
+		t.Fatalf("Bind() error = %v", err)
+	}
+
+	// The connector side: read the request the gateway writes into the tunnel,
+	// check that the body arrived in full, and answer with a short response.
+	connectorErr := make(chan error, 1)
+	go func() {
+		req, err := http.ReadRequest(bufio.NewReader(clientConn))
+		if err != nil {
+			connectorErr <- fmt.Errorf("read request: %w", err)
+			return
+		}
+		got, err := io.ReadAll(req.Body)
+		if err != nil {
+			connectorErr <- fmt.Errorf("read request body: %w", err)
+			return
+		}
+		if len(got) != len(body) || string(got) != body {
+			connectorErr <- fmt.Errorf("tunnel body length = %d, want %d", len(got), len(body))
+			return
+		}
+		if _, err := io.WriteString(clientConn, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"); err != nil {
+			connectorErr <- fmt.Errorf("write response: %w", err)
+			return
+		}
+		connectorErr <- nil
+	}()
+
+	transport := &tunnelTransport{registry: registry}
+	req := httptest.NewRequest(http.MethodPost, "/api/chat", strings.NewReader(body))
+	resp, err := transport.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip() error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if _, err := io.ReadAll(resp.Body); err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	if err := <-connectorErr; err != nil {
+		t.Fatal(err)
 	}
 }
 

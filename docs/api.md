@@ -24,7 +24,7 @@ Client API response codes:
 | `502` | Connector could not proxy the request to Ollama |
 | `503` | No free tunnel is available for the requested model |
 
-The model name is read from the request body. Bodies larger than 1 MiB are not parsed, so such requests cannot be routed by model.
+The model name is read from the request body. The Gateway reads the whole body to parse it, so large requests are routed by model too — `/api/chat` with images can be tens of megabytes. The body occupies the Gateway's memory until it is written to the tunnel; there is no body size cap yet.
 
 ## Tunnel pool API (`pool.apiAddress` on the Gateway)
 
