@@ -34,8 +34,8 @@ CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/gateway ./cmd/gateway
 ## Запуск из исходников
 
 ```sh
-go run ./cmd/gateway   -config examples/gateway.json
-go run ./cmd/connector -config examples/connector.json
+go run ./cmd/gateway   -config deployment/packaging/config/gateway.json
+go run ./cmd/connector -config deployment/packaging/config/connector.json
 ```
 
 `-config` — путь к JSON-конфигу; по умолчанию `/etc/centaur/gateway.json` и
@@ -53,7 +53,7 @@ go test -cover ./...
 
 Тесты самодостаточны: поднимают слушатели на `127.0.0.1:0` (порт выбирает ОС) и
 ходят друг к другу по loopback, поэтому им не нужны ни Ollama, ни внешняя сеть,
-ни свободные порты `18180`–`18183` из примеров конфигов.
+ни свободные порты `18180`–`18183` из конфигов по умолчанию.
 
 `-race` стоит гонять регулярно: реестр туннелей, выдача туннелей и фоновая
 вычистка мёртвых работают из нескольких горутин.

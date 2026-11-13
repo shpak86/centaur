@@ -1,0 +1,17 @@
+{
+  "logger": {
+    "level": "info"
+  },
+  "pool": {
+    "address": "gateway:18181",
+    "apiAddress": "http://gateway:18182",
+    "key": "CHANGE_ME",
+    "tunnels": 4
+  },
+  "target": {
+    "address": "http://host.docker.internal:11434",
+    "models": [
+      "llama3.2:1b"
+    ]
+  }
+}

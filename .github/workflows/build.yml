@@ -26,16 +26,23 @@ jobs:
     - name: Build and package
       run: |
         set -euo pipefail
-        for target in linux/amd64 darwin/amd64; do
+        for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
           os=${target%/*}
           arch=${target#*/}
           name="centaur-${os}-${arch}"
           mkdir -p "${name}/bin" "${name}/config"
           GOOS=${os} GOARCH=${arch} go build -o "${name}/bin/centaur-gateway" ./cmd/gateway
           GOOS=${os} GOARCH=${arch} go build -o "${name}/bin/centaur-connector" ./cmd/connector
-          cp examples/gateway.json examples/connector.json "${name}/config/"
+          cp deployment/packaging/config/gateway.json "${name}/config/gateway.json"
+          cp deployment/packaging/config/connector.json "${name}/config/connector.json"
+          if [ "${os}" = "linux" ]; then
+            mkdir -p "${name}/systemd"
+            cp deployment/packaging/systemd/centaur-gateway.service \
+               deployment/packaging/systemd/centaur-connector.service "${name}/systemd/"
+          fi
           tar -czf "${name}.tar.gz" "${name}"
         done
+        sha256sum centaur-*.tar.gz > checksums.txt
 
     - name: Create release
       uses: softprops/action-gh-release@v2
@@ -45,4 +52,7 @@ jobs:
         prerelease: false
         files: |
           centaur-linux-amd64.tar.gz
+          centaur-linux-arm64.tar.gz
           centaur-darwin-amd64.tar.gz
+          centaur-darwin-arm64.tar.gz
+          checksums.txt

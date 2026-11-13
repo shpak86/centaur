@@ -3,9 +3,9 @@
     "level": "info"
   },
   "pool": {
-    "address": "gateway.lan:18181",
-    "apiAddress": "http://gateway.lan:18182",
-    "key": "connector-key",
+    "address": "gateway:18181",
+    "apiAddress": "http://gateway:18182",
+    "key": "CHANGE_ME",
     "tunnels": 2
   },
   "target": {

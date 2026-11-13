@@ -7,7 +7,7 @@ Both binaries accept a JSON config path via the `-config` flag:
 - Gateway: defaults to `/etc/centaur/gateway.json`.
 - Connector: defaults to `/etc/centaur/connector.json`.
 
-Example files are in the repository: [`examples/gateway.json`](../examples/gateway.json) and [`examples/connector.json`](../examples/connector.json).
+Default configuration files live in [`deployment/packaging/config/gateway.json`](../deployment/packaging/config/gateway.json) and [`deployment/packaging/config/connector.json`](../deployment/packaging/config/connector.json); the release archive ships them as `config/gateway.json` and `config/connector.json`, and they are installed into `/etc/centaur`. Container-oriented variants are in [`deployment/docker/config`](../deployment/docker/config) — see [`docker.md`](docker.md).
 
 ## Summary
 

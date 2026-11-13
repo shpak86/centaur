@@ -28,8 +28,8 @@ CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/gateway ./cmd/gateway
 ## Run from source
 
 ```sh
-go run ./cmd/gateway   -config examples/gateway.json
-go run ./cmd/connector -config examples/connector.json
+go run ./cmd/gateway   -config deployment/packaging/config/gateway.json
+go run ./cmd/connector -config deployment/packaging/config/connector.json
 ```
 
 `-config` specifies the JSON config path. Defaults are `/etc/centaur/gateway.json` and `/etc/centaur/connector.json`. See [`configuration.md`](configuration.md) for all fields and [`docker.md`](docker.md) for container deployment.
@@ -42,7 +42,7 @@ go test -race ./...
 go test -cover ./...
 ```
 
-Tests are self-contained: they listen on `127.0.0.1:0` (letting the OS choose a port) and communicate over loopback. They need no Ollama, external network access, or free ports `18180`–`18183` from the example configs.
+Tests are self-contained: they listen on `127.0.0.1:0` (letting the OS choose a port) and communicate over loopback. They need no Ollama, external network access, or free ports `18180`–`18183` from the default configs.
 
 Run `-race` regularly: the tunnel registry, tunnel acquisition, and background stale-tunnel cleanup run in multiple goroutines.
 
