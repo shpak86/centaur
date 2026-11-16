@@ -32,6 +32,53 @@ Gateway проксирует **только инференс-ручки** — т
 бывает в десятки мегабайт. Тело занимает память gateway, пока не уйдёт в туннель;
 верхней границы размера тела пока нет.
 
+## Потоковые ответы
+
+Gateway отдаёт ответ без буферизации: каждый чанк уходит клиенту сразу, как приходит
+из туннеля (`FlushInterval: -1` на обеих сторонах), а ответ из туннеля читается без
+дедлайна. Поэтому долгая генерация не обрывается, а NDJSON/SSE приходит
+инкрементально — так же, как при прямом обращении к Ollama.
+
+- у `/api/generate` и `/api/chat` `stream` по умолчанию `true` (NDJSON); чтобы
+  получить один JSON-документ, укажите `"stream": false`;
+- `/v1/chat/completions` и `/v1/completions` отдают SSE, если в запросе
+  `"stream": true`;
+- поток занимает свой одноразовый туннель до конца ответа, поэтому число
+  одновременных потоков ограничено `pool.tunnels`; запросы сверх лимита получают
+  `503`;
+- если клиент отключился, gateway закрывает туннель и освобождает слот;
+- тело запроса по-прежнему читается целиком до маршрутизации (чтобы достать модель),
+  поэтому потоковым является только ответ;
+- `centaur_gateway_request_duration_seconds` учитывает всё время потока.
+
+`curl` буферизует вывод, поэтому используйте `-N` (`--no-buffer`), чтобы видеть
+чанки по мере генерации:
+
+```sh
+# NDJSON: по одному JSON-объекту в строке, в последнем "done": true
+curl -sN -X POST http://127.0.0.1:18180/api/generate \
+  -d '{"model":"llama3.2:1b","prompt":"hello"}'
+```
+
+```json
+{"model":"llama3.2:1b","created_at":"...","response":"Hello","done":false}
+{"model":"llama3.2:1b","created_at":"...","response":"!","done":false}
+{"model":"llama3.2:1b","created_at":"...","response":"","done":true,"done_reason":"stop"}
+```
+
+```sh
+# SSE: чанки в формате OpenAI, завершаются data: [DONE]
+curl -sN -X POST http://127.0.0.1:18180/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"llama3.2:1b","stream":true,"messages":[{"role":"user","content":"hello"}]}'
+```
+
+```text
+data: {"id":"chatcmpl-...","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"Hello"},"finish_reason":null}]}
+
+data: [DONE]
+```
+
 ## API пула туннелей (gateway, `pool.apiAddress`)
 
 Защищён заголовком `ApiKey`.
