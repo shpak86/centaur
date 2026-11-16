@@ -1,11 +1,12 @@
 package tunnel
 
 import (
-	"crypto/rand"
+	cryptorand "crypto/rand"
 	"errors"
 	"iter"
 	"log/slog"
 	"maps"
+	mathrand "math/rand"
 	"net"
 	"slices"
 	"sync"
@@ -66,7 +67,7 @@ func NewRegistry(m *metrics.Metrics) *Registry {
 func (r *Registry) Register(models []string) string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	id := rand.Text()[:16]
+	id := cryptorand.Text()[:16]
 	tunnel := NewTunnel(id, nil, models)
 	slog.Debug("Register tunnel", "id", id, "models", models)
 	r.tunnels[id] = tunnel
@@ -92,7 +93,6 @@ func (r *Registry) Bind(id string, conn *net.TCPConn) error {
 		return errors.New("unable to bind tunnel id: " + id)
 	}
 	tunnel.Conn = conn
-	r.tunnels[id] = tunnel
 	slog.Debug("Bind conn", "id", id, "conn", conn.RemoteAddr().String())
 	return nil
 }
@@ -102,11 +102,16 @@ func (r *Registry) Bind(id string, conn *net.TCPConn) error {
 func (r *Registry) Tunnels() iter.Seq[*Tunnel] {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return maps.Values(r.tunnels)
+	return slices.Values(slices.Collect(maps.Values(r.tunnels)))
 }
 
 // Acquire hands out a tunnel that supports model and immediately removes it from
 // the registry: tunnels are single-use, so it will never be requested again.
+// When several tunnels match, they are searched in random order (Fisher-Yates
+// shuffle): a fixed order would always consume the tunnels of the connector that
+// comes first, while the rest of the pool sat idle. The shuffle does not rely on
+// the map iteration order: Go randomizes it, but does not promise a uniform
+// permutation, so only an explicit shuffle makes the choice uniform.
 // A tunnel enters the registry before Bind, so while Conn == nil it is skipped:
 // it cannot be handed out — RoundTrip would write to a connection that is not
 // ready.
@@ -120,18 +125,28 @@ func (r *Registry) Acquire(model string) (*Tunnel, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	for id, t := range r.tunnels {
+	tunnels := make([]*Tunnel, len(r.tunnels))
+	j := 0
+	for _, t := range r.tunnels {
+		tunnels[j] = t
+		k := mathrand.Intn(j + 1)
+		tunnels[k], tunnels[j] = tunnels[j], tunnels[k]
+		j++
+	}
+
+	for i := range tunnels {
+		t := tunnels[i]
 		if t.Conn == nil {
 			continue
 		}
 		if !t.alive() {
-			slog.Info("Drop dead tunnel", "id", id, "models", t.Models)
+			slog.Info("Drop dead tunnel", "id", t.Id, "models", t.Models)
 			r.recordStale(stateReady)
-			r.drop(id, t)
+			r.drop(t.Id, t)
 			continue
 		}
 		if slices.Contains(t.Models, model) {
-			delete(r.tunnels, id)
+			delete(r.tunnels, t.Id)
 			return t, true
 		}
 	}
