@@ -236,3 +236,101 @@ func TestServeProxiesTunnelRequestToOllama(t *testing.T) {
 		t.Fatal("ollama body was not received")
 	}
 }
+
+// TestServeProxiesOpenAIRequest checks that an OpenAI-compatible request keeps
+// its path, query, Authorization header, and body when proxied to the local
+// backend.
+func TestServeProxiesOpenAIRequest(t *testing.T) {
+	const apiKey = "key"
+	const requestBody = `{"model":"m","messages":[{"role":"user","content":"hi"}]}`
+
+	type captured struct {
+		path  string
+		query string
+		auth  string
+		body  string
+	}
+	targetReq := make(chan captured, 1)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read target request body: %v", err)
+		}
+		select {
+		case targetReq <- captured{
+			path:  r.URL.Path,
+			query: r.URL.RawQuery,
+			auth:  r.Header.Get("Authorization"),
+			body:  string(body),
+		}:
+		default:
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := w.Write([]byte(`{"id":"chatcmpl-1"}`)); err != nil {
+			t.Errorf("write target response: %v", err)
+		}
+	}))
+	t.Cleanup(target.Close)
+
+	register := newRegisterServer(t, apiKey)
+
+	result := make(chan int, 1)
+	tunnelAddr := newTunnelPool(t, func(conn net.Conn) {
+		req, err := http.NewRequest(http.MethodPost, "http://tunnel/v1/chat/completions?trace=1", strings.NewReader(requestBody))
+		if err != nil {
+			t.Errorf("build tunnel request: %v", err)
+			return
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer client-key")
+		req.Close = true
+		if err := req.Write(conn); err != nil {
+			t.Errorf("write request to tunnel: %v", err)
+			return
+		}
+		resp, err := http.ReadResponse(bufio.NewReader(conn), req)
+		if err != nil {
+			t.Errorf("read response from tunnel: %v", err)
+			return
+		}
+		defer resp.Body.Close()
+		if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+			t.Errorf("read tunnel response body: %v", err)
+			return
+		}
+		select {
+		case result <- resp.StatusCode:
+		default:
+		}
+	})
+
+	client := NewClient(register.URL, tunnelAddr, target.URL, apiKey, []string{"m"}, 1)
+	startClient(t, client)
+
+	select {
+	case status := <-result:
+		if status != http.StatusOK {
+			t.Fatalf("tunnel response status = %d, want %d", status, http.StatusOK)
+		}
+	case <-time.After(testTimeout):
+		t.Fatal("no request was proxied through the tunnel")
+	}
+
+	select {
+	case got := <-targetReq:
+		if got.path != "/v1/chat/completions" {
+			t.Fatalf("target path = %q, want %q", got.path, "/v1/chat/completions")
+		}
+		if got.query != "trace=1" {
+			t.Fatalf("target query = %q, want %q", got.query, "trace=1")
+		}
+		if got.auth != "Bearer client-key" {
+			t.Fatalf("target Authorization = %q, want %q", got.auth, "Bearer client-key")
+		}
+		if got.body != requestBody {
+			t.Fatalf("target body = %q, want %q", got.body, requestBody)
+		}
+	case <-time.After(testTimeout):
+		t.Fatal("target did not receive the request")
+	}
+}

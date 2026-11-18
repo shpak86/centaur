@@ -12,7 +12,7 @@ To use the shared capacity, clients only send requests to the Gateway; no additi
 
 ```
                       tunnel (TCP)
-client ──▶ gateway ─────────────────▶ connector ──▶ Ollama
+client ──▶ gateway ─────────────────▶ connector ──▶ Ollama / OpenAI-compatible
 ```
 
 ## Key ideas
@@ -45,13 +45,13 @@ centaur-linux-amd64/
 
 1. Download the archive and `checksums.txt` for the same tag from [releases](https://github.com/shpak86/centaur/releases), then verify the archive:
     ```sh
-    VER=v0.1.5
+    VER=vX.Y.Z  # replace with the release tag from the releases page
     curl -fLO "https://github.com/shpak86/centaur/releases/download/${VER}/centaur-linux-amd64.tar.gz"
     curl -fLO "https://github.com/shpak86/centaur/releases/download/${VER}/checksums.txt"
     grep 'linux-amd64.tar.gz' checksums.txt > centaur.sha256
     sha256sum -c centaur.sha256
     ```
-    `checksums.txt` and the `systemd/` directory are published since v0.1.5; for older tags skip the checksum step and take the units from [`deployment/packaging/systemd`](deployment/packaging/systemd).
+    `checksums.txt` and the `systemd/` directory are shipped with current releases; if a tag does not contain them, skip the checksum step and take the units from [`deployment/packaging/systemd`](deployment/packaging/systemd).
 
 1. Unpack the archive:
     ```sh
@@ -172,7 +172,7 @@ Remote Gateway, Linux networking (`host.docker.internal`, Ollama on `0.0.0.0` in
 # Gateway health: answered by the Gateway itself, not through a tunnel
 curl -s http://gateway.lan:18180/
 
-# Ollama info/admin endpoints are not proxied by the Gateway → 501
+# Backend info/admin endpoints are not proxied by the Gateway → 501
 curl -si http://gateway.lan:18180/api/tags
 
 # Inference: the tunnel is selected by the model in the request body
@@ -189,7 +189,7 @@ See [`docs/configuration.md`](docs/configuration.md) for the full field referenc
 
 ## Limitations
 
-- Ollama info/admin endpoints are not available through the Gateway (`501`): the Gateway runs inference; it does not manage remote Ollama instances.
+- Backend info/admin endpoints (Ollama `/api/tags`, OpenAI `/v1/models`, ...) are not available through the Gateway (`501`): the Gateway runs inference; it does not manage remote inference servers.
 - Concurrency is limited by `pool.tunnels`: requests with no available tunnel receive `503` while the connector replenishes the pool.
 - The pool detects dead tunnels when a connection closes (FIN/RST), on acquisition and during background sweeps. A silent network failure is detected only by TCP keepalive, so a request may end with `502`.
 

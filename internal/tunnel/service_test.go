@@ -83,6 +83,35 @@ func TestHandleInferenceWithoutTunnel(t *testing.T) {
 	}
 }
 
+// TestHandleOpenAIInferenceWithoutTunnel checks that all supported
+// OpenAI-compatible inference endpoints reach the proxy: with no free tunnel
+// they answer 503, not 501.
+func TestHandleOpenAIInferenceWithoutTunnel(t *testing.T) {
+	tests := []struct {
+		name string
+		path string
+		body string
+	}{
+		{"chat completions", "/v1/chat/completions", `{"model":"gpt-oss:20b","messages":[]}`},
+		{"completions", "/v1/completions", `{"model":"gpt-oss:20b","prompt":"hi"}`},
+		{"embeddings", "/v1/embeddings", `{"model":"nomic","input":"hi"}`},
+		{"responses", "/v1/responses", `{"model":"gpt-oss:20b","input":"hi"}`},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			service := newTestService()
+
+			rec := httptest.NewRecorder()
+			service.Handle(rec, httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body)))
+
+			if rec.Code != http.StatusServiceUnavailable {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+			}
+		})
+	}
+}
+
 // TestHandleRecordsMetrics checks that Handle records requests in the gateway
 // metrics (endpoint + HTTP status) and that /metrics serves them in the
 // Prometheus format.
