@@ -2,21 +2,22 @@
 
 [English](../architecture.md) | Русский
 
-Centaur — gateway-прокси перед [Ollama](https://ollama.com). Коннекторы стоят
-рядом с локальными Ollama и поднимают к gateway исходящие TCP-соединения —
-туннели; клиенты обращаются к gateway как к обычному Ollama API.
+Centaur — gateway-прокси перед [Ollama](https://ollama.com) или любым
+OpenAI-совместимым inference-сервером. Коннекторы стоят рядом с локальным
+inference-бэкендом и поднимают к gateway исходящие TCP-соединения — туннели;
+клиенты обращаются к gateway как к обычному inference API.
 
 ```
                       туннель (TCP)
-client ──▶ gateway ─────────────────▶ connector ──▶ Ollama (локально)
+client ──▶ gateway ─────────────────▶ connector ──▶ Ollama / OpenAI-compatible
              proxy.address          pool.address     target.address
 
 prometheus ──▶ gateway (metrics.address, GET /metrics)
 ```
 
-Смысл схемы в том, что до Ollama снаружи достучаться нельзя: gateway не открывает
-портов на стороне Ollama — соединение всегда инициирует коннектор, поэтому
-достаточно исходящего доступа к gateway.
+Смысл схемы в том, что до inference-бэкенда снаружи достучаться нельзя: gateway не
+открывает портов на стороне бэкенда — соединение всегда инициирует коннектор,
+поэтому достаточно исходящего доступа к gateway.
 
 ## Одноразовые туннели
 
@@ -41,7 +42,8 @@ prometheus ──▶ gateway (metrics.address, GET /metrics)
 4. Клиентский запрос приходит на `proxy.address`. Gateway разбирает имя модели из
    тела запроса, находит свободный туннель, поддерживающий эту модель, и
    проксирует запрос по туннелю.
-5. Коннектор принимает запрос из туннеля и проксирует его в локальную Ollama.
+5. Коннектор принимает запрос из туннеля и проксирует его в локальный
+   inference-бэкенд (Ollama или OpenAI-совместимый сервер).
 6. После ответа туннель закрывается, коннектор поднимает новый. `Serve` запускает
    `pool.tunnels` таких воркеров, поэтому пул не пустеет.
 
@@ -71,7 +73,7 @@ prometheus ──▶ gateway (metrics.address, GET /metrics)
 
 - свой порт удобно слушать на loopback и не публиковать на сетевом периметре;
 - Prometheus скрейпит gateway независимо от клиентского трафика;
-- `proxy.address` остаётся точной копией Ollama API — без лишних ручек.
+- `proxy.address` остаётся точной копией inference API — без лишних ручек.
 
 ## Карта пакетов
 
@@ -86,16 +88,16 @@ prometheus ──▶ gateway (metrics.address, GET /metrics)
 | `internal/tunnel/tunnel.go` | структура `Tunnel` и состояния `pending`/`ready` |
 | `internal/tunnel/tunnel_server.go` | TCP-сервер пула: handshake и выдача туннелей |
 | `internal/tunnel/api_server.go` | HTTP API пула (регистрация) и `AuthMiddleware` |
-| `internal/tunnel/client.go` | клиент коннектора: регистрация, туннель, прокси в Ollama |
-| `internal/tunnel/model.go` | список инференс-ручек и разбор имени модели из тела |
+| `internal/tunnel/client.go` | клиент коннектора: регистрация, туннель, прокси в локальный бэкенд |
+| `internal/tunnel/model.go` | инференс-ручки Ollama и OpenAI-совместимых серверов, разбор имени модели из тела |
 | `internal/tunnel/auth.go` | проверка API-ключа |
 | `internal/tunnel/dto.go` | DTO регистрации туннеля |
 | `internal/metrics` | реестр Prometheus, метрики gateway, обработчик `/metrics` |
 
 ## Дизайн-заметки
 
-- Инфо/админ-ручки Ollama gateway не проксирует: он выполняет инференс, а не
-  управляет удалённой Ollama.
+- Инфо/админ-ручки бэкенда gateway не проксирует: он выполняет инференс, а не
+  управляет удалёнными inference-серверами.
 - Тело запроса инференс-ручек читается целиком ради имени модели
   (`internal/tunnel/model.go`): `model` может стоять в любом месте JSON, а
   `/api/chat` с крупными `images` бывает в десятки мегабайт. Затем тело

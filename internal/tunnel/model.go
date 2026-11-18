@@ -8,15 +8,20 @@ import (
 	"net/http"
 )
 
-// modelPaths are the endpoints whose request body carries the model name.
+// modelPaths are the inference endpoints whose JSON request body carries the
+// model name.
 var modelPaths = map[string]struct{}{
-	"/api/generate":        {},
-	"/api/chat":            {},
-	"/api/embed":           {},
-	"/api/embeddings":      {},
+	// Ollama native endpoints.
+	"/api/generate":   {},
+	"/api/chat":       {},
+	"/api/embed":      {},
+	"/api/embeddings": {},
+
+	// OpenAI-compatible endpoints (top-level "model" in the JSON body).
 	"/v1/chat/completions": {},
 	"/v1/completions":      {},
 	"/v1/embeddings":       {},
+	"/v1/responses":        {},
 }
 
 // modelBody is the minimal part of a request body needed for routing.

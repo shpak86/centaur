@@ -43,7 +43,7 @@ docker buildx build --platform linux/amd64 -f deployment/docker/gateway.Dockerfi
 
 # обе архитектуры: нужен registry, куда пушить
 docker buildx build --platform linux/amd64,linux/arm64 -f deployment/docker/gateway.Dockerfile \
-  -t registry/centaur-gateway:v0.1.5 --push .
+  -t registry/centaur-gateway:vX.Y.Z --push .
 ```
 
 Обычный `docker build` собирает образ под архитектуру хоста: `arm64` на Apple Silicon, `amd64` на x86.

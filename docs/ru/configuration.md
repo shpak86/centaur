@@ -30,7 +30,7 @@
 | connector | `pool.apiAddress` | URL HTTP API пула; **со схемой** (`http://...`) |
 | connector | `pool.key` | API-ключ коннектора — должен быть в `pool.keys` gateway |
 | connector | `pool.tunnels` | сколько туннелей держать одновременно (`> 0`) |
-| connector | `target.address` | URL локальной Ollama |
+| connector | `target.address` | URL локального inference-бэкенда (Ollama или OpenAI-совместимый) |
 | connector | `target.models` | модели, которые коннектор объявляет gateway |
 
 Дальше — те же поля с типами и деталями по каждой стороне отдельно.
@@ -84,7 +84,7 @@
 | `pool.apiAddress` | URL | URL HTTP API пула; **со схемой** (`http://...`) |
 | `pool.key` | string | API-ключ коннектора; должен входить в `pool.keys` gateway |
 | `pool.tunnels` | int | сколько туннелей держать одновременно; должно быть `> 0` |
-| `target.address` | URL | URL локальной Ollama |
+| `target.address` | URL | URL локального inference-бэкенда: Ollama или OpenAI-совместимый сервер |
 | `target.models` | `[]string` | модели, которые коннектор объявляет и по которым маршрутизируется |
 
 ## Общие замечания
@@ -97,5 +97,6 @@
 - `pool.key` коннектора должен точно совпадать с одним из `pool.keys` gateway,
   иначе регистрация вернёт `403 Forbidden`, а коннектор будет переподключаться
   каждую секунду (туннелей будет 0).
-- `target.models` должны соответствовать моделям, реально доступным в Ollama:
+- `target.models` должны соответствовать моделям, реально доступным в локальном
+  бэкенде:
   маршрутизация идёт по имени модели из тела запроса.

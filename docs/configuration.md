@@ -24,7 +24,7 @@ This combined table gives an overview of both binaries; detailed field types and
 | connector | `pool.apiAddress` | Pool HTTP API URL; **includes a scheme** (`http://...`) |
 | connector | `pool.key` | Connector API key; must be listed in the Gateway's `pool.keys` |
 | connector | `pool.tunnels` | Number of concurrent tunnels to maintain (`> 0`) |
-| connector | `target.address` | Local Ollama URL |
+| connector | `target.address` | Local inference backend URL (Ollama or OpenAI-compatible) |
 | connector | `target.models` | Models the connector advertises to the Gateway |
 
 ## Gateway
@@ -76,7 +76,7 @@ This combined table gives an overview of both binaries; detailed field types and
 | `pool.apiAddress` | URL | Pool HTTP API URL; **includes a scheme** (`http://...`) |
 | `pool.key` | string | Connector API key; must be listed in the Gateway's `pool.keys` |
 | `pool.tunnels` | int | Number of tunnels to maintain; must be `> 0` |
-| `target.address` | URL | Local Ollama URL |
+| `target.address` | URL | Local inference backend URL: Ollama or an OpenAI-compatible server |
 | `target.models` | `[]string` | Models the connector advertises and can serve |
 
 ## Notes
@@ -84,4 +84,4 @@ This combined table gives an overview of both binaries; detailed field types and
 - `pool.*` means different things on each side: the Gateway **listens** on `pool.address`/`pool.apiAddress`, while the connector **dials** them.
 - The connector's `pool.apiAddress` requires a URL scheme; the Gateway's is a listen address without a scheme. Both binaries validate this at startup and report an error rather than silently accepting the other side's format.
 - The connector's `pool.key` must exactly match one of the Gateway's `pool.keys`. Otherwise, registration returns `403 Forbidden` and the connector retries every second (leaving the pool with zero tunnels).
-- `target.models` must match models actually available in Ollama; routing uses the model name in the request body.
+- `target.models` must match models actually available in the local backend; routing uses the model name in the request body.

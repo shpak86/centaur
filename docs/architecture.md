@@ -2,17 +2,17 @@
 
 [English](architecture.md) | [Русский](ru/architecture.md)
 
-Centaur is a gateway proxy in front of [Ollama](https://ollama.com). Connectors run next to local Ollama instances and open outbound TCP connections—tunnels—to the Gateway. Clients use the Gateway like a regular Ollama API.
+Centaur is a gateway proxy in front of [Ollama](https://ollama.com) or any OpenAI-compatible inference server. Connectors run next to the local inference backend and open outbound TCP connections—tunnels—to the Gateway. Clients use the Gateway like a regular inference API.
 
 ```
                       tunnel (TCP)
-client ──▶ gateway ─────────────────▶ connector ──▶ Ollama (local)
+client ──▶ gateway ─────────────────▶ connector ──▶ Ollama / OpenAI-compatible
              proxy.address          pool.address     target.address
 
 prometheus ──▶ gateway (metrics.address, GET /metrics)
 ```
 
-Ollama does not need to be reachable from outside: the Gateway does not open ports on the Ollama side. The connector always initiates the connection, so it only needs outbound access to the Gateway.
+The inference backend does not need to be reachable from outside: the Gateway does not open ports on the backend side. The connector always initiates the connection, so it only needs outbound access to the Gateway.
 
 ## One-shot tunnels
 
@@ -26,7 +26,7 @@ Each connector maintains a pool of `pool.tunnels` tunnels. They are ready to acc
 2. The connector connects to the pool's TCP address and writes the 16-byte `token` first; this is the handshake.
 3. The Gateway uses the token to bind the connection to the registered tunnel. Before the handshake the tunnel is `pending`; afterwards it is `ready`.
 4. A client request arrives at `proxy.address`. The Gateway reads the model name from the request body, finds a free tunnel that supports the model, and proxies the request through it.
-5. The connector receives the request from the tunnel and proxies it to its local Ollama instance.
+5. The connector receives the request from the tunnel and proxies it to its local inference backend (Ollama or an OpenAI-compatible server).
 6. After the response, the tunnel closes and the connector opens another one. `Serve` starts `pool.tunnels` such workers to keep the pool replenished.
 
 ## Pool and stale tunnel cleanup
@@ -46,7 +46,7 @@ Metrics are served at `metrics.address` (`GET /metrics`), not at `proxy.address`
 
 - A dedicated port can listen on loopback and stay off the network perimeter.
 - Prometheus scrapes the Gateway independently of client traffic.
-- `proxy.address` remains an exact Ollama API surface, without extra endpoints.
+- `proxy.address` remains an exact inference API surface, without extra endpoints.
 
 ## Package map
 
@@ -61,15 +61,15 @@ Metrics are served at `metrics.address` (`GET /metrics`), not at `proxy.address`
 | `internal/tunnel/tunnel.go` | `Tunnel` structure and `pending`/`ready` states |
 | `internal/tunnel/tunnel_server.go` | Pool TCP server: handshake and tunnel acquisition |
 | `internal/tunnel/api_server.go` | Pool HTTP API (registration) and `AuthMiddleware` |
-| `internal/tunnel/client.go` | Connector client: registration, tunnel, and proxy to Ollama |
-| `internal/tunnel/model.go` | Inference endpoints and model-name extraction from request bodies |
+| `internal/tunnel/client.go` | Connector client: registration, tunnel, and proxy to the local backend |
+| `internal/tunnel/model.go` | Ollama and OpenAI-compatible inference endpoints, and model-name extraction from request bodies |
 | `internal/tunnel/auth.go` | API key validation |
 | `internal/tunnel/dto.go` | Tunnel registration DTO |
 | `internal/metrics` | Prometheus registry, Gateway metrics, and `/metrics` handler |
 
 ## Design notes
 
-- The Gateway does not proxy Ollama info/admin endpoints: it runs inference; it does not manage remote Ollama instances.
+- The Gateway does not proxy backend info/admin endpoints: it runs inference; it does not manage remote inference servers.
 - The request body of model endpoints is read in full to extract the model name (`internal/tunnel/model.go`): `model` may sit anywhere in the JSON, and `/api/chat` with large `images` is tens of megabytes. The body is then restored and written into the tunnel; until that moment it occupies Gateway memory.
 - WebSocket/Upgrade (`101 Switching Protocols`) is not supported through tunnels; Ollama does not use it.
 - `pool.*` means different things on each side: the Gateway **listens** on `pool.address`/`pool.apiAddress`, while the connector **dials** them. Both binaries validate address formats at startup and fail with a clear error if they are invalid.

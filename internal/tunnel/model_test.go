@@ -23,6 +23,7 @@ func TestRequestModelExtractsModel(t *testing.T) {
 		{"v1 chat completions", "/v1/chat/completions", `{"model":"gpt-oss:20b","messages":[]}`, "gpt-oss:20b"},
 		{"v1 completions", "/v1/completions", `{"model":"gpt-oss:20b","prompt":"hi"}`, "gpt-oss:20b"},
 		{"v1 embeddings", "/v1/embeddings", `{"model":"nomic","input":"hi"}`, "nomic"},
+		{"v1 responses", "/v1/responses", `{"model":"gpt-oss:20b","input":"hi"}`, "gpt-oss:20b"},
 	}
 
 	for _, tc := range tests {

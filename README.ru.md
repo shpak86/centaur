@@ -13,7 +13,7 @@ Centaur — система для построения распределённ�
 
 ```
                       туннель (TCP)
-client ──▶ gateway ─────────────────▶ connector ──▶ Ollama
+client ──▶ gateway ─────────────────▶ connector ──▶ Ollama / OpenAI-compatible
 ```
 
 ## Ключевые идеи
@@ -45,13 +45,13 @@ centaur-linux-amd64/
 
 1. Скачайте архив и `checksums.txt` одного и того же тега из [релизов](https://github.com/shpak86/centaur/releases) и проверьте архив:
     ```sh
-    VER=v0.1.5
+    VER=vX.Y.Z  # замените на тег релиза со страницы релизов
     curl -fLO "https://github.com/shpak86/centaur/releases/download/${VER}/centaur-linux-amd64.tar.gz"
     curl -fLO "https://github.com/shpak86/centaur/releases/download/${VER}/checksums.txt"
     grep 'linux-amd64.tar.gz' checksums.txt > centaur.sha256
     sha256sum -c centaur.sha256
     ```
-    `checksums.txt` и каталог `systemd/` публикуются начиная с v0.1.5; в старых тегах пропустите проверку суммы, а юниты возьмите из [`deployment/packaging/systemd`](deployment/packaging/systemd).
+    `checksums.txt` и каталог `systemd/` есть в актуальных релизах; если в выбранном теге их нет, пропустите проверку суммы, а юниты возьмите из [`deployment/packaging/systemd`](deployment/packaging/systemd).
 
 1. Распакуйте архив:
     ```sh
@@ -172,7 +172,7 @@ Docker Desktop на macOS и Windows по умолчанию запускает 
 # health gateway: отвечает сам gateway, не через туннель
 curl -s http://gateway.lan:18180/
 
-# инфо/админ-ручки Ollama gateway не проксирует → 501
+# инфо/админ-ручки бэкенда gateway не проксирует → 501
 curl -si http://gateway.lan:18180/api/tags
 
 # инференс: туннель выбирается по модели из тела запроса
@@ -191,8 +191,9 @@ curl -s http://gateway.lan:18183/metrics | grep '^centaur_gateway'
 
 ## Ограничения
 
-- Инфо/админ-ручки Ollama через gateway недоступны (`501`): gateway выполняет
-  инференс, а не управляет удалённой Ollama.
+- Инфо/админ-ручки бэкенда (Ollama `/api/tags`, OpenAI `/v1/models` и т.п.) через
+  gateway недоступны (`501`): gateway выполняет инференс, а не управляет удалёнными
+  inference-серверами.
 - Число туннелей ограничено `pool.tunnels`: запросы сверх числа свободных туннелей
   получают `503`, пока коннектор поднимает новые.
 - Мёртвые туннели пул находит по закрытию соединения (FIN/RST) — при выдаче
