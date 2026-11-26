@@ -1,3 +1,5 @@
 .vscode
 # local Docker configuration created from deployment/docker/config (holds the pool key)
 /config/
+# Delve debug binaries left by IDE debug sessions
+__debug_bin*

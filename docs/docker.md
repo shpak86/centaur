@@ -232,12 +232,12 @@ docker rm -f centaur-gateway centaur-connector
 # health: answered by the Gateway itself, not through a tunnel
 curl -s http://127.0.0.1:18180/
 
+# model list: answered by the Gateway from the tunnel registry, no tunnel used
+curl -s http://127.0.0.1:18180/api/tags
+
 # inference: the tunnel is selected by the model in the request body
 curl -s -X POST http://127.0.0.1:18180/api/generate \
   -d '{"model":"llama3.2:1b","prompt":"hello","stream":false}'
-
-# Ollama info/admin endpoints are not proxied by the Gateway -> 501
-curl -si http://127.0.0.1:18180/api/tags
 
 # Prometheus metrics
 curl -s http://127.0.0.1:18183/metrics | grep '^centaur_gateway'

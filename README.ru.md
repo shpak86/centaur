@@ -172,8 +172,8 @@ Docker Desktop на macOS и Windows по умолчанию запускает 
 # health gateway: отвечает сам gateway, не через туннель
 curl -s http://gateway.lan:18180/
 
-# инфо/админ-ручки бэкенда gateway не проксирует → 501
-curl -si http://gateway.lan:18180/api/tags
+# список моделей: отвечает сам gateway из реестра туннелей, туннель не занимается
+curl -s http://gateway.lan:18180/api/tags
 
 # инференс: туннель выбирается по модели из тела запроса
 curl -s -X POST http://gateway.lan:18180/api/generate \
@@ -191,9 +191,11 @@ curl -s http://gateway.lan:18183/metrics | grep '^centaur_gateway'
 
 ## Ограничения
 
-- Инфо/админ-ручки бэкенда (Ollama `/api/tags`, OpenAI `/v1/models` и т.п.) через
-  gateway недоступны (`501`): gateway выполняет инференс, а не управляет удалёнными
-  inference-серверами.
+- Инфо/админ-ручки бэкенда (Ollama `/api/version`, `/api/ps`, `/api/show`, OpenAI
+  `/v1/models/{model}` и т.п.) через gateway недоступны (`501`): gateway выполняет
+  инференс, а не управляет удалёнными inference-серверами. Исключение — список
+  моделей: `GET /api/tags` и `GET /v1/models` gateway отвечает сам, из реестра
+  туннелей, поэтому там модели, объявленные подключёнными коннекторами.
 - Число туннелей ограничено `pool.tunnels`: запросы сверх числа свободных туннелей
   получают `503`, пока коннектор поднимает новые.
 - Мёртвые туннели пул находит по закрытию соединения (FIN/RST) — при выдаче
@@ -208,8 +210,8 @@ curl -s http://gateway.lan:18183/metrics | grep '^centaur_gateway'
   туннели, handshake, пул, вычистка мёртвых туннелей, карта пакетов.
 - [`docs/ru/configuration.md`](docs/ru/configuration.md) — полный справочник конфигов
   gateway и коннектора.
-- [`docs/ru/api.md`](docs/ru/api.md) — маршрутизация по модели, коды ответов, API пула
-  туннелей.
+- [`docs/ru/api.md`](docs/ru/api.md) — маршрутизация по модели, список моделей, коды
+  ответов, API пула туннелей.
 - [`docs/ru/metrics.md`](docs/ru/metrics.md) — метрики Prometheus.
 - [`docs/ru/development.md`](docs/ru/development.md) — сборка, запуск, тесты и
   требования.

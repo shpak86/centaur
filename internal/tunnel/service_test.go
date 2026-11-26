@@ -3,10 +3,12 @@ package tunnel
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -34,7 +36,8 @@ func TestHandleRootHealth(t *testing.T) {
 
 // TestHandleRejectsNonInferenceEndpoints checks that the gateway does not proxy
 // Ollama's info/admin endpoints: there is no matching tunnel, so the request must
-// not reach the proxy or occupy a tunnel.
+// not reach the proxy or occupy a tunnel. The model-list endpoints are the
+// exception: the gateway answers them itself (TestHandleListModels).
 func TestHandleRejectsNonInferenceEndpoints(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -42,7 +45,6 @@ func TestHandleRejectsNonInferenceEndpoints(t *testing.T) {
 		target string
 	}{
 		{"version", http.MethodGet, "/api/version"},
-		{"tags", http.MethodGet, "/api/tags"},
 		{"ps", http.MethodGet, "/api/ps"},
 		{"show", http.MethodPost, "/api/show"},
 		{"pull", http.MethodPost, "/api/pull"},
@@ -50,7 +52,6 @@ func TestHandleRejectsNonInferenceEndpoints(t *testing.T) {
 		{"create", http.MethodPost, "/api/create"},
 		{"copy", http.MethodPost, "/api/copy"},
 		{"delete", http.MethodDelete, "/api/delete"},
-		{"v1 models", http.MethodGet, "/v1/models"},
 		{"v1 model", http.MethodGet, "/v1/models/llama3:8b"},
 		{"unknown", http.MethodGet, "/unknown"},
 	}
@@ -64,6 +65,117 @@ func TestHandleRejectsNonInferenceEndpoints(t *testing.T) {
 
 			if rec.Code != http.StatusNotImplemented {
 				t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotImplemented)
+			}
+		})
+	}
+}
+
+// TestHandleListModels checks that the model-list endpoints are answered by the
+// gateway from the tunnel registry instead of being proxied: the answer is the
+// union of the models the connectors advertise, without duplicates, and the
+// request does not occupy a tunnel. /api/tags uses the Ollama shape, /v1/models
+// the OpenAI one.
+func TestHandleListModels(t *testing.T) {
+	service := newTestService()
+	// Two connectors with an overlapping model list. Register alone is enough to
+	// advertise a model: no handshake (Bind) is needed for the list.
+	service.registry.Register([]string{"llama3:8b", "nomic"})
+	service.registry.Register([]string{"nomic", "gpt-oss:20b"})
+
+	want := []string{"gpt-oss:20b", "llama3:8b", "nomic"}
+
+	t.Run("ollama tags", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		service.Handle(rec, httptest.NewRequest(http.MethodGet, "/api/tags", nil))
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+		}
+		if got := rec.Header().Get("Content-Type"); got != "application/json" {
+			t.Errorf("Content-Type = %q, want %q", got, "application/json")
+		}
+
+		var response tagsResponseDto
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode response %q: %v", rec.Body.String(), err)
+		}
+		got := make([]string, 0, len(response.Models))
+		for _, model := range response.Models {
+			if model.Name != model.Model {
+				t.Errorf("tagDto = %+v, want name and model to match", model)
+			}
+			got = append(got, model.Name)
+		}
+		slices.Sort(got)
+		if !slices.Equal(got, want) {
+			t.Errorf("models = %v, want %v", got, want)
+		}
+	})
+
+	t.Run("openai models", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		service.Handle(rec, httptest.NewRequest(http.MethodGet, "/v1/models", nil))
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+		}
+		if got := rec.Header().Get("Content-Type"); got != "application/json" {
+			t.Errorf("Content-Type = %q, want %q", got, "application/json")
+		}
+
+		var response modelsResponseDto
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode response %q: %v", rec.Body.String(), err)
+		}
+		if response.Object != "list" {
+			t.Errorf("object = %q, want %q", response.Object, "list")
+		}
+		got := make([]string, 0, len(response.Data))
+		for _, model := range response.Data {
+			if model.Object != "model" {
+				t.Errorf("modelDto = %+v, want object %q", model, "model")
+			}
+			got = append(got, model.Id)
+		}
+		slices.Sort(got)
+		if !slices.Equal(got, want) {
+			t.Errorf("data = %v, want %v", got, want)
+		}
+	})
+
+	// The list endpoints never touch the pool: no tunnel is acquired, so the
+	// misses counter stays at zero.
+	rec := httptest.NewRecorder()
+	service.MetricsHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if !strings.Contains(rec.Body.String(), "centaur_gateway_tunnel_acquire_misses_total 0") {
+		t.Errorf("model-list requests occupied a tunnel:\n%s", rec.Body.String())
+	}
+}
+
+// TestHandleListModelsEmptyRegistry checks that an empty pool answers with empty
+// JSON arrays, not null: clients iterate the list unconditionally.
+func TestHandleListModelsEmptyRegistry(t *testing.T) {
+	service := newTestService()
+
+	tests := []struct {
+		name string
+		path string
+		want string
+	}{
+		{"ollama tags", "/api/tags", `{"models":[]}`},
+		{"openai models", "/v1/models", `{"object":"list","data":[]}`},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			service.Handle(rec, httptest.NewRequest(http.MethodGet, tc.path, nil))
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+			}
+			if got := strings.TrimSpace(rec.Body.String()); got != tc.want {
+				t.Fatalf("body = %q, want %q", got, tc.want)
 			}
 		})
 	}
@@ -124,7 +236,7 @@ func TestHandleRecordsMetrics(t *testing.T) {
 	service.Handle(httptest.NewRecorder(), httptest.NewRequest(
 		http.MethodPost, "/api/generate", strings.NewReader(`{"model":"llama3:8b","prompt":"hi"}`)))
 	// a non-inference endpoint → 501 and collapses into endpoint="other".
-	service.Handle(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/tags", nil))
+	service.Handle(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/version", nil))
 
 	rec := httptest.NewRecorder()
 	service.MetricsHandler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))

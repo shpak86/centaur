@@ -232,12 +232,12 @@ docker rm -f centaur-gateway centaur-connector
 # живость: отвечает сам Gateway, не через туннель
 curl -s http://127.0.0.1:18180/
 
+# список моделей: отвечает сам gateway из реестра туннелей, туннель не занимается
+curl -s http://127.0.0.1:18180/api/tags
+
 # инференс: туннель выбирается по модели в теле запроса
 curl -s -X POST http://127.0.0.1:18180/api/generate \
   -d '{"model":"llama3.2:1b","prompt":"hello","stream":false}'
-
-# info/admin-эндпоинты Ollama через Gateway не проксируются -> 501
-curl -si http://127.0.0.1:18180/api/tags
 
 # метрики Prometheus
 curl -s http://127.0.0.1:18183/metrics | grep '^centaur_gateway'
