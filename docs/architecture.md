@@ -2,7 +2,7 @@
 
 [English](architecture.md) | [Русский](ru/architecture.md)
 
-Centaur is a gateway proxy in front of [Ollama](https://ollama.com) or any OpenAI-compatible inference server. Connectors run next to the local inference backend and open outbound TCP connections—tunnels—to the Gateway. Clients use the Gateway like a regular inference API.
+Centaur is a gateway proxy in front of [Ollama](https://ollama.com) or any OpenAI-compatible inference server. Connectors run next to the local inference backend and open outbound TCP connections—tunnels—to the Gateway. Clients use the Gateway like a regular inference API, including the model list: `GET /api/tags` and `GET /v1/models` are answered by the Gateway from the tunnel registry, not proxied.
 
 ```
                       tunnel (TCP)
@@ -40,6 +40,17 @@ Without these checks, tunnels belonging to a crashed connector would remain mark
 
 One case cannot be detected this way: a silent network failure with no FIN/RST (a “black hole”). It is detected only by TCP keepalive on the tunnel server (30-second interval, about 5 minutes to detect), so a request sent through such a tunnel may end with `502`.
 
+## Model list
+
+The Gateway answers the model-list endpoints itself, from the tunnel registry, without occupying a tunnel:
+
+- `GET /api/tags` — the Ollama shape: `{"models":[{"name":"...","model":"..."}]}`;
+- `GET /v1/models` — the OpenAI shape: `{"object":"list","data":[{"id":"...","object":"model"}]}`.
+
+The list is `Registry.Models()`: the union of the models the connectors announce in `target.models` at registration, de-duplicated, order undefined. It describes what the pool can route to, not what the backends have loaded: a model is listed while a tunnel that announced it is registered—even a `pending` one—and it disappears only when the background sweep drops the last such tunnel. No tunnel is consumed by these requests, so they work with an empty pool (returning an empty array).
+
+Every other backend info/admin endpoint is not proxied and answers `501` (see [`api.md`](api.md)).
+
 ## Why metrics use a separate address
 
 Metrics are served at `metrics.address` (`GET /metrics`), not at `proxy.address`:
@@ -56,20 +67,20 @@ Metrics are served at `metrics.address` (`GET /metrics`), not at `proxy.address`
 | `cmd/connector` | Connector binary: configuration and client lifecycle |
 | `internal/api/proxy_server.go` | `ProxyServer`, the client-facing HTTP server |
 | `internal/api/metrics_server.go` | `MetricsServer`, the metrics HTTP server |
-| `internal/tunnel/service.go` | Gateway side: reverse proxy, model parsing, and routing |
-| `internal/tunnel/registry.go` | Tunnel registry: `Register`/`Bind`/`Acquire` |
+| `internal/tunnel/service.go` | Gateway side: reverse proxy, model parsing, routing, and the model-list endpoints |
+| `internal/tunnel/registry.go` | Tunnel registry: `Register`/`Bind`/`Acquire`, and the models it advertises (`Models`) |
 | `internal/tunnel/tunnel.go` | `Tunnel` structure and `pending`/`ready` states |
 | `internal/tunnel/tunnel_server.go` | Pool TCP server: handshake and tunnel acquisition |
 | `internal/tunnel/api_server.go` | Pool HTTP API (registration) and `AuthMiddleware` |
 | `internal/tunnel/client.go` | Connector client: registration, tunnel, and proxy to the local backend |
 | `internal/tunnel/model.go` | Ollama and OpenAI-compatible inference endpoints, and model-name extraction from request bodies |
 | `internal/tunnel/auth.go` | API key validation |
-| `internal/tunnel/dto.go` | Tunnel registration DTO |
+| `internal/tunnel/dto.go` | Tunnel registration and model-list DTOs |
 | `internal/metrics` | Prometheus registry, Gateway metrics, and `/metrics` handler |
 
 ## Design notes
 
-- The Gateway does not proxy backend info/admin endpoints: it runs inference; it does not manage remote inference servers.
+- The Gateway does not proxy backend info/admin endpoints: it runs inference; it does not manage remote inference servers. The model list is the exception: `GET /api/tags` and `GET /v1/models` are answered by the Gateway from the tunnel registry instead of being proxied.
 - The request body of model endpoints is read in full to extract the model name (`internal/tunnel/model.go`): `model` may sit anywhere in the JSON, and `/api/chat` with large `images` is tens of megabytes. The body is then restored and written into the tunnel; until that moment it occupies Gateway memory.
 - WebSocket/Upgrade (`101 Switching Protocols`) is not supported through tunnels; Ollama does not use it.
 - `pool.*` means different things on each side: the Gateway **listens** on `pool.address`/`pool.apiAddress`, while the connector **dials** them. Both binaries validate address formats at startup and fail with a clear error if they are invalid.

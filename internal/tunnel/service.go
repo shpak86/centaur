@@ -3,6 +3,7 @@ package tunnel
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -270,11 +271,16 @@ func (s *Service) MetricsHandler() http.Handler {
 	return s.metrics.Handler()
 }
 
-// Handle proxies a client request into a free tunnel.
-// Only inference endpoints (modelPaths) are proxied: the gateway performs
-// inference rather than managing a remote Ollama, so it does not proxy
-// info/admin endpoints (tags, ps, show, pull, push, create, copy, delete,
-// /v1/models) and answers 501 instead.
+// Handle serves a client request on the gateway's proxy address.
+//
+// Inference endpoints (modelPaths) are proxied into a free tunnel: the gateway
+// performs inference rather than managing a remote Ollama, so other info/admin
+// endpoints (version, ps, show, pull, push, create, copy, delete,
+// /v1/models/{model}) are not proxied and answer 501 instead.
+//
+// Three paths are answered by the gateway itself, without occupying a tunnel:
+// GET / (the liveness check, which Ollama clients ping) and the model-list
+// endpoints GET /api/tags and GET /v1/models.
 func (s *Service) Handle(w http.ResponseWriter, r *http.Request) {
 	endpoint := endpointLabel(r.URL.Path)
 	rec := &statusRecorder{ResponseWriter: w}
@@ -294,6 +300,16 @@ func (s *Service) Handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Model-list endpoints are answered by the gateway, not proxied: the list is
+	// the union of the models the connected connectors announce (target.models),
+	// so it does not depend on which of them holds which model, and the request
+	// does not occupy a tunnel. Ollama clients call GET /api/tags, OpenAI clients
+	// call GET /v1/models; the shape differs, the source is the same registry.
+	if r.Method == http.MethodGet && (r.URL.Path == "/api/tags" || r.URL.Path == "/v1/models") {
+		s.writeModelList(rec, r.URL.Path)
+		return
+	}
+
 	if _, ok := modelPaths[r.URL.Path]; !ok {
 		slog.Debug("Rejected non-inference request", "method", r.Method, "path", r.URL.Path)
 		http.Error(rec, "centaur gateway proxies inference endpoints only", http.StatusNotImplemented)
@@ -301,6 +317,43 @@ func (s *Service) Handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.proxy.ServeHTTP(rec, r)
+}
+
+// writeModelList answers a model-list endpoint from the tunnel registry.
+//
+// The list is what the connected connectors advertise (target.models) rather than
+// what their backends have loaded: a model is listed while at least one tunnel
+// that announced it is registered, including a pending one whose handshake has
+// not completed, and it is dropped only when the background sweep removes the
+// last such tunnel. Models are de-duplicated and the order is not defined.
+//
+// path is either /api/tags (the Ollama shape) or /v1/models (the OpenAI one).
+func (s *Service) writeModelList(w http.ResponseWriter, path string) {
+	models := s.registry.Models()
+
+	// The slices are allocated even when empty: both clients expect a JSON array,
+	// not null.
+	var payload any
+	if path == "/api/tags" {
+		response := tagsResponseDto{Models: make([]tagDto, 0, len(models))}
+		for _, model := range models {
+			response.Models = append(response.Models, tagDto{Name: model, Model: model})
+		}
+		payload = response
+	} else {
+		response := modelsResponseDto{Object: "list", Data: make([]modelDto, 0, len(models))}
+		for _, model := range models {
+			response.Data = append(response.Data, modelDto{Id: model, Object: "model"})
+		}
+		payload = response
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(payload); err != nil {
+		slog.Error("Write model list response", "path", path, "error", err)
+	}
+	slog.Debug("Write model list response", "path", path, "models", models)
+
 }
 
 // endpointLabel bounds metric cardinality: inference endpoints use their own

@@ -172,8 +172,8 @@ Remote Gateway, Linux networking (`host.docker.internal`, Ollama on `0.0.0.0` in
 # Gateway health: answered by the Gateway itself, not through a tunnel
 curl -s http://gateway.lan:18180/
 
-# Backend info/admin endpoints are not proxied by the Gateway → 501
-curl -si http://gateway.lan:18180/api/tags
+# Model list: answered by the Gateway from the tunnel registry, no tunnel used
+curl -s http://gateway.lan:18180/api/tags
 
 # Inference: the tunnel is selected by the model in the request body
 curl -s -X POST http://gateway.lan:18180/api/generate \
@@ -189,7 +189,7 @@ See [`docs/configuration.md`](docs/configuration.md) for the full field referenc
 
 ## Limitations
 
-- Backend info/admin endpoints (Ollama `/api/tags`, OpenAI `/v1/models`, ...) are not available through the Gateway (`501`): the Gateway runs inference; it does not manage remote inference servers.
+- Backend info/admin endpoints (Ollama `/api/version`, `/api/ps`, `/api/show`, OpenAI `/v1/models/{model}`, ...) are not available through the Gateway (`501`): the Gateway runs inference; it does not manage remote inference servers. The model list is the exception: `GET /api/tags` and `GET /v1/models` are answered by the Gateway itself, from the tunnel registry, so they report the models the connected connectors advertise.
 - Concurrency is limited by `pool.tunnels`: requests with no available tunnel receive `503` while the connector replenishes the pool.
 - The pool detects dead tunnels when a connection closes (FIN/RST), on acquisition and during background sweeps. A silent network failure is detected only by TCP keepalive, so a request may end with `502`.
 
@@ -199,7 +199,7 @@ See [`docs/architecture.md`](docs/architecture.md) for details.
 
 - [`docs/architecture.md`](docs/architecture.md) — system design, one-shot tunnels, handshake, tunnel pool, stale tunnel cleanup, and package map.
 - [`docs/configuration.md`](docs/configuration.md) — full Gateway and connector configuration reference.
-- [`docs/api.md`](docs/api.md) — model routing, response codes, and tunnel pool API.
+- [`docs/api.md`](docs/api.md) — model routing, the model list, response codes, and the tunnel pool API.
 - [`docs/metrics.md`](docs/metrics.md) — Prometheus metrics.
 - [`docs/development.md`](docs/development.md) — build, run, test, and development requirements.
 - [`docs/docker.md`](docs/docker.md) — build images and run the Gateway and connector in Docker.

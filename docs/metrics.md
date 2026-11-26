@@ -14,7 +14,7 @@ The Gateway exposes Prometheus metrics at `GET /metrics` on the **separate** `me
 | `centaur_gateway_tunnels` | gauge | `state` (`pending` / `ready`) | Current number of tunnels in the registry |
 | `centaur_gateway_tunnel_stale_total` | counter | `state` (`pending` / `ready`) | Tunnels removed from the registry: dead connection (`ready`) or incomplete handshake (`pending`) |
 
-`endpoint` cardinality is bounded: inference endpoints use their own paths, `/` is Gateway health, and all other paths are grouped under `other`. Standard Go runtime (`go_*`) and process (`process_*`) metrics are also exported.
+`endpoint` cardinality is bounded: inference endpoints use their own paths, `/` is Gateway health, and all other paths are grouped under `other`—the model-list endpoints `GET /api/tags` and `GET /v1/models` included. Standard Go runtime (`go_*`) and process (`process_*`) metrics are also exported.
 
 ```sh
 # Metrics on the separate metrics.address port

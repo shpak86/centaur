@@ -5,7 +5,9 @@
 Centaur — gateway-прокси перед [Ollama](https://ollama.com) или любым
 OpenAI-совместимым inference-сервером. Коннекторы стоят рядом с локальным
 inference-бэкендом и поднимают к gateway исходящие TCP-соединения — туннели;
-клиенты обращаются к gateway как к обычному inference API.
+клиенты обращаются к gateway как к обычному inference API, включая список моделей:
+`GET /api/tags` и `GET /v1/models` gateway отдаёт сам, из реестра туннелей, а не
+проксирует.
 
 ```
                       туннель (TCP)
@@ -67,6 +69,17 @@ prometheus ──▶ gateway (metrics.address, GET /metrics)
 30 секунд, обнаружение — около 5 минут), поэтому запрос, попавший в такой туннель,
 может закончиться `502`.
 
+## Список моделей
+
+Ручки списка моделей gateway отвечает сам, из реестра туннелей, не занимая туннель:
+
+- `GET /api/tags` — формат Ollama: `{"models":[{"name":"...","model":"..."}]}`;
+- `GET /v1/models` — формат OpenAI: `{"object":"list","data":[{"id":"...","object":"model"}]}`.
+
+Список — это `Registry.Models()`: объединение моделей, которые коннекторы объявляют в `target.models` при регистрации, без дубликатов, порядок не определён. Он описывает то, по чему пул **может** маршрутизировать, а не то, что загружено в бэкендах: модель в списке, пока зарегистрирован объявивший её туннель — даже `pending`, — и исчезает только когда фоновый обход выбросит последний такой туннель. Туннель такими запросами не занимается, поэтому они работают и с пустым пулом (отдаётся пустой массив).
+
+Все остальные инфо/админ-ручки бэкенда не проксируются и отвечают `501` (см. [`api.md`](api.md)).
+
 ## Почему метрики на отдельном адресе
 
 Метрики отдаются на `metrics.address` (`GET /metrics`), а не на `proxy.address`:
@@ -83,21 +96,23 @@ prometheus ──▶ gateway (metrics.address, GET /metrics)
 | `cmd/connector` | бинарь коннектора: конфиг, запуск/остановка клиента |
 | `internal/api/proxy_server.go` | `ProxyServer` — клиентский HTTP-сервер |
 | `internal/api/metrics_server.go` | `MetricsServer` — HTTP-сервер метрик |
-| `internal/tunnel/service.go` | сторона gateway: обратный прокси, разбор модели, маршрутизация |
-| `internal/tunnel/registry.go` | реестр туннелей: `Register`/`Bind`/`Acquire` |
+| `internal/tunnel/service.go` | сторона gateway: обратный прокси, разбор модели, маршрутизация и ручки списка моделей |
+| `internal/tunnel/registry.go` | реестр туннелей: `Register`/`Bind`/`Acquire` и объявленные модели (`Models`) |
 | `internal/tunnel/tunnel.go` | структура `Tunnel` и состояния `pending`/`ready` |
 | `internal/tunnel/tunnel_server.go` | TCP-сервер пула: handshake и выдача туннелей |
 | `internal/tunnel/api_server.go` | HTTP API пула (регистрация) и `AuthMiddleware` |
 | `internal/tunnel/client.go` | клиент коннектора: регистрация, туннель, прокси в локальный бэкенд |
 | `internal/tunnel/model.go` | инференс-ручки Ollama и OpenAI-совместимых серверов, разбор имени модели из тела |
 | `internal/tunnel/auth.go` | проверка API-ключа |
-| `internal/tunnel/dto.go` | DTO регистрации туннеля |
+| `internal/tunnel/dto.go` | DTO регистрации туннеля и списка моделей |
 | `internal/metrics` | реестр Prometheus, метрики gateway, обработчик `/metrics` |
 
 ## Дизайн-заметки
 
 - Инфо/админ-ручки бэкенда gateway не проксирует: он выполняет инференс, а не
-  управляет удалёнными inference-серверами.
+  управляет удалёнными inference-серверами. Исключение — список моделей:
+  `GET /api/tags` и `GET /v1/models` gateway отвечает сам из реестра туннелей, а не
+  проксирует.
 - Тело запроса инференс-ручек читается целиком ради имени модели
   (`internal/tunnel/model.go`): `model` может стоять в любом месте JSON, а
   `/api/chat` с крупными `images` бывает в десятки мегабайт. Затем тело

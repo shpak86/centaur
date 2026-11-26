@@ -17,7 +17,8 @@ Gateway отдаёт метрики Prometheus на `GET /metrics` — на **о
 | `centaur_gateway_tunnel_stale_total` | counter | `state` (`pending` / `ready`) | туннели, вычищенные из реестра: соединение мертво (`ready`) или handshake не состоялся (`pending`) |
 
 `endpoint` ограничен по кардинальности: инференс-ручки идут по своему пути, `/` —
-health gateway, всё прочее схлопывается в `other`. Дополнительно экспортируются
+health gateway, всё прочее схлопывается в `other` — включая ручки списка моделей
+`GET /api/tags` и `GET /v1/models`. Дополнительно экспортируются
 стандартные метрики рантайма (`go_*`) и процесса (`process_*`).
 
 ```sh

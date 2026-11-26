@@ -187,6 +187,32 @@ func (r *Registry) Sweep() (dropped int) {
 	return dropped
 }
 
+// Models returns the union of the models announced by the registered tunnels —
+// what the pool can route to right now — without duplicates. The order is not
+// defined.
+//
+// The list is what the connectors advertise (target.models), not what their
+// backends have loaded: a model stays in it while at least one tunnel that
+// announced it is registered, including a pending tunnel whose handshake has not
+// completed, and a model of a dead connector is dropped only when the background
+// sweep removes its tunnels. It backs the gateway's model-list endpoints,
+// GET /api/tags and GET /v1/models.
+func (r *Registry) Models() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	tunnels := make(map[string]struct{})
+	for _, tunnel := range r.tunnels {
+		for _, model := range tunnel.Models {
+			tunnels[model] = struct{}{}
+		}
+	}
+	models := make([]string, 0, len(tunnels))
+	for model := range tunnels {
+		models = append(models, model)
+	}
+	return models
+}
+
 // drop removes the tunnel from the registry (called under r.mu) and closes its
 // connection, if any, to release the descriptor.
 func (r *Registry) drop(id string, t *Tunnel) {
